@@ -41,6 +41,7 @@ on:
           - cudy_tr3000-v1
           - cudy_tr3000-v1-ubootmod
           - cudy_tr3000-256mb-v1
+          - cudy_tr3000-512mb-v1
           - jcg_q30-pro
           - jcg_q30
           - jcg_q30-ubootmod
