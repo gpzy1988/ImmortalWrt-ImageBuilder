@@ -570,7 +570,7 @@ jobs:
           if [ -f "model/mt7621.txt" ]; then
             mt7621_models=$(cat model/mt7621.txt | tr '\n' '|')
             mt7621_models=${mt7621_models%|}
-            if [[ "$profile" =~^($mt7621_models)$ ]]; then
+            if [[ "$profile" =~ ^($mt7621_models)$ ]]; then
                 case_tag="ramips-mt7621-openwrt-25.12.1"
                 case_platform="ramips/mt7621"
             fi
@@ -638,14 +638,14 @@ jobs:
             -v "${{ github.workspace }}/shell:/home/build/immortalwrt/shell" \
             -v "${{ github.workspace }}/mediatek-filogic/build25.sh:/home/build/immortalwrt/build.sh" \
             -v "${{ github.workspace }}/mediatek-filogic/512.sh:/home/build/immortalwrt/512.sh" \
-            -e PROFILE=$profile \
-            -e INCLUDE_DOCKER=$include_docker \
-            -e ENABLE_PPPOE=${{ inputs.enable_pppoe }} \
-            -e PPPOE_ACCOUNT=${{ inputs.pppoe_account }} \
-            -e PPPOE_PASSWORD=${{ inputs.pppoe_password }} \
+            -e PROFILE="$profile" \
+            -e INCLUDE_DOCKER="$include_docker" \
+            -e ENABLE_PPPOE="${{ inputs.enable_pppoe }}" \
+            -e PPPOE_ACCOUNT="${{ inputs.pppoe_account }}" \
+            -e PPPOE_PASSWORD="${{ inputs.pppoe_password }}" \
           immortalwrt/imagebuilder:$tag /bin/bash -c '
             # 仅针对Cudy TR3000 512MB机型执行专属适配
-            if [ "$PROFILE" = "cudy_tr3000-512mb-v1" ]; then
+            if [[ "$PROFILE" == "cudy_tr3000-512mb-v1" ]]; then
               echo "✅ 检测到Cudy TR3000 512MB机型，执行定制适配脚本512.sh"
               chmod +x /home/build/immortalwrt/512.sh
               /home/build/immortalwrt/512.sh
