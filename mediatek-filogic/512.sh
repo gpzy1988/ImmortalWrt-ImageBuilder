@@ -1,195 +1,110 @@
 #!/bin/bash
 #==============================================================
-# ImmortalWrt 24.x / 25.x ImageBuilder 通用设备添加模板（修复版）
-# 兼容：ImmortalWrt 24.10、25.xx（含25.12.1最新版）
-# 已修复：25.12.x make info 识别不到设备的问题
-#==============================================================
-
-#==============================================================
-# 【用户配置区】——只改这里，下面不要动！
-#==============================================================
-
-# ---- 1. 平台 ----
-# mediatek/ath79/ipq40xx/ramips/bcm53xx/rockchip/sunxi ...
-PLATFORM="mediatek"
-
-# 子目标，常见：filogic/generic/ath79/ipq40xx/ramips ...
-SUBTARGET="filogic"
-
-# ---- 2. 设备 ----
-# 设备名（小写字母+数字+下划线+横杠）
-DEVICE_NAME="cudy_tr3000-512mb-v1"
-# 厂商名（显示在 LuCI 系统信息）
-DEVICE_VENDOR="Cudy"
-# 型号名
-DEVICE_MODEL="TR3000"
-# 变体说明
-DEVICE_VARIANT="v1 (512MB NAND)"
-# 设备完整标题
-DEVICE_TITLE="${DEVICE_VENDOR} ${DEVICE_MODEL} ${DEVICE_VARIANT}"
-
-# ---- 3. DTS 文件 ----
-# ⚠️ 基础 DTS 必须已经存在于你的 ImageBuilder 里！
-# 如果没有，需要先从 ImmortalWrt 源码仓库复制过来
-DTS_BASE="mt7981b-cudy-tr3000-v1"
-# 新 DTS 文件名（不含 .dts 后缀）
-DTS_NEW="mt7981b-cudy-tr3000-512mb-v1"
-
-# ---- 4. 固件分区参数 ----
-# 固件总大小（单位 k），根据实际 NAND 大小计算
-# 常见值：512MB=507904k / 256MB=253952k / 1GB=1015808k
-IMAGE_SIZE="507904k"
-# 闪存擦除块大小（NAND 通常 128k，eMMC 256k）
-BLOCKSIZE="128k"
-# 闪存页大小（NAND 通常 2048，eMMC 4096）
-PAGESIZE="2048"
-# UBI 坏块保护参数（-E 5 表示跳过 5 个 PEB）
-UBINIZE_OPTS="-E 5"
-
-# ---- 5. 内核相关 ----
-# ImmortalWrt 24.x 默认 6.6，25.x 大部分 6.6，部分 6.12
-# 不确定先填 6.6，这个值只影响显示不影响构建
-KERNEL_VER="6.6"
-# 内核是否放进 UBI（1=是 省空间，0=否 需要单独分区）
-KERNEL_IN_UBI="1"
-
-# ---- 6. 默认软件包（空格分隔）----
-# 不需要可以留空 ""
-DEVICE_PACKAGES="kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount"
-
-#==============================================================
-# 【脚本主体】——下面不用动
+# ImmortalWrt 25.12.x 专属适配脚本
+# 目标机型：Cudy TR3000 512MB NAND
+# 完全适配mediatek/filogic 25.12.1全新目录结构
 #==============================================================
 
 set -e
 
-# ---- 路径变量 ----
-IB_DIR="/home/build/immortalwrt"
-# 如果不在Docker环境则自动切换为当前目录运行
-if [ ! -d "${IB_DIR}" ]; then
-    IB_DIR="$(pwd)"
-fi
-DTS_DIR="${IB_DIR}/target/linux/${PLATFORM}/dts"
-IMAGE_MK="${IB_DIR}/target/linux/${PLATFORM}/image/${SUBTARGET}.mk"
-TARGETINFO="${IB_DIR}/target/linux/${PLATFORM}/image/${SUBTARGET}.targetinfo"
+# -------------- 基础配置区 --------------
+PLATFORM="mediatek"
+SUBTARGET="filogic"
+DEVICE_NAME="cudy_tr3000-512mb-v1"
+DEVICE_VENDOR="Cudy"
+DEVICE_MODEL="TR3000"
+DEVICE_VARIANT="v1 (512MB NAND)"
+DEVICE_TITLE="${DEVICE_VENDOR} ${DEVICE_MODEL} ${DEVICE_VARIANT}"
+DTS_BASE="mt7981b-cudy-tr3000-v1"
+DTS_NEW="mt7981b-cudy-tr3000-512mb-v1"
+IMAGE_SIZE="507904k"
+BLOCKSIZE="128k"
+PAGESIZE="2048"
+UBINIZE_OPTS="-E 5"
+KERNEL_VER="6.6"
+KERNEL_IN_UBI="1"
+DEVICE_PACKAGES="kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount"
 
-# ---- 颜色 ----
+# -------------- 自动适配25.12目录规则 --------------
+IB_DIR="/home/build/immortalwrt"
+# 非Docker环境自动适配本地路径
+[ ! -d "${IB_DIR}" ] && IB_DIR="$(pwd)"
+DTS_DIR="${IB_DIR}/target/linux/${PLATFORM}/dts"
+
+# 25.12专属路径自动检测
+if [ -d "${IB_DIR}/target/linux/${PLATFORM}/image/${SUBTARGET}" ]; then
+    IMAGE_MK="${IB_DIR}/target/linux/${PLATFORM}/image/${SUBTARGET}/Makefile"
+    TARGETINFO="$(dirname "${IMAGE_MK}")/${SUBTARGET}.targetinfo"
+else
+    IMAGE_MK="${IB_DIR}/target/linux/${PLATFORM}/image/${SUBTARGET}.mk"
+    TARGETINFO="${IB_DIR}/target/linux/${PLATFORM}/image/${SUBTARGET}.targetinfo"
+fi
+
+# -------------- 颜色输出定义 --------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
-
 info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
 
-#==============================================================
-# 步骤 0：预检查
-#==============================================================
+# -------------- 前置检查 --------------
 echo ""
 echo "============================================="
-echo "  ImmortalWrt 24.x/25.x 通用设备添加模板（修复版）"
+echo "  ImmortalWrt 25.12.x Cudy TR3000 512MB 专属适配"
 echo "  目标: ${PLATFORM}/${SUBTARGET} / ${DEVICE_NAME}"
 echo "============================================="
 
-# 检查基础 DTS 是否存在
-if [ ! -f "${DTS_DIR}/${DTS_BASE}.dts" ]; then
-    error "基础 DTS 不存在: ${DTS_DIR}/${DTS_BASE}.dts"
-    echo "  请先从 ImmortalWrt 源码仓库复制："
-    echo "  https://github.com/immortalwrt/immortalwrt/tree/openwrt/target/linux/${PLATFORM}/dts"
-fi
+# 检查基础DTS是否存在
+[ ! -f "${DTS_DIR}/${DTS_BASE}.dts" ] && error "基础DTS不存在，请从ImmortalWrt源码复制 ${DTS_DIR}/${DTS_BASE}.dts"
 
-# 检查 .mk 是否存在
-if [ ! -f "${IMAGE_MK}" ]; then
-    # 25.x 部分平台可能改名了，检查备选路径
-    ALT_MK="${IB_DIR}/target/linux/${PLATFORM}/image/${SUBTARGET}/Makefile"
-    if [ -f "${ALT_MK}" ]; then
-        IMAGE_MK="${ALT_MK}"
-        info "检测到 25.x 备选路径，使用: ${ALT_MK}"
-    else
-        error "Image Makefile 不存在: ${IMAGE_MK} / ${ALT_MK}"
-        echo "  请确认 PLATFORM='${PLATFORM}' SUBTARGET='${SUBTARGET}' 是否正确"
-        echo "  可执行: ls ${IB_DIR}/target/linux/${PLATFORM}/image/"
-        exit 1
-    fi
-fi
+# 检查25.12专属Makefile是否存在
+[ ! -f "${IMAGE_MK}" ] && error "未找到25.12适配的Makefile，实际路径：${IMAGE_MK}"
 
-# 自动匹配.targetinfo对应路径
-if [[ "${IMAGE_MK}" == *"Makefile" ]]; then
-    TARGETINFO="$(dirname "${IMAGE_MK}")/${SUBTARGET}.targetinfo"
-fi
-
-#==============================================================
-# 步骤 0.5：Cudy TR3000专属适配 - USB供电默认关闭
-#==============================================================
+# -------------- Cudy TR3000专属适配：USB供电默认关闭 --------------
 echo ""
-info "开启USB供电默认关闭配置"
+info "执行Cudy TR3000专属适配：USB供电默认关闭"
 if [ -f "${DTS_DIR}/${DTS_BASE}.dtsi" ]; then
     sed -i '/modem-power/,/};/ {s/gpio-export,output = <1>;/gpio-export,output = <0>;/}' \
         "${DTS_DIR}/${DTS_BASE}.dtsi"
     ok "USB供电默认状态已修改为关闭"
 fi
 
-#==============================================================
-# 步骤 1：复制 DTS/DTSI
-#==============================================================
+# -------------- 步骤1：复制512MB专属DTS文件 --------------
 echo ""
-echo "[步骤 1/5] 复制 DTS/DTSI..."
-
+echo "[步骤 1/5] 复制512MB专属DTS/DTSI文件"
 cp "${DTS_DIR}/${DTS_BASE}.dts" "${DTS_DIR}/${DTS_NEW}.dts"
 ok "已创建 ${DTS_DIR}/${DTS_NEW}.dts"
-
-# 有些设备有 .dtsi 包含文件，一并复制
-if [ -f "${DTS_DIR}/${DTS_BASE}.dtsi" ]; then
+[ -f "${DTS_DIR}/${DTS_BASE}.dtsi" ] && {
     cp "${DTS_DIR}/${DTS_BASE}.dtsi" "${DTS_DIR}/${DTS_NEW}.dtsi"
     ok "已创建 ${DTS_DIR}/${DTS_NEW}.dtsi"
-else
-    info "无 .dtsi 文件，跳过"
-fi
+} || info "无DTSI文件，跳过复制"
 
-#==============================================================
-# 步骤 2：修改分区大小（按需）
-#==============================================================
+# -------------- 步骤2：修改512MB分区大小 --------------
 echo ""
-echo "[步骤 2/5] 修改分区大小..."
-
-# 默认把 64MB(0x4000000) 改成 512MB(0x1FA40000)
-# 如果你不需要改分区大小，把下面这行注释掉（加 #）
+echo "[步骤 2/5] 修改512MB分区大小"
 sed -i 's|reg = <0x5c0000 0x4000000>;|reg = <0x5c0000 0x1FA40000>;|g' \
     "${DTS_DIR}/${DTS_NEW}.dts"
-ok "分区大小已更新 (64MB → 512MB)"
+ok "分区大小已从64MB更新为512MB"
 
-# 如果你的设备起始地址不是 0x5c0000，需要改成实际值
-# 查看方法：grep "reg = <0x" ${DTS_DIR}/${DTS_BASE}.dts
-
-#==============================================================
-# 步骤 3：修改 DTSI UBI 定义（按需）
-#==============================================================
+# -------------- 步骤3：更新UBI分区定义 --------------
 echo ""
-echo "[步骤 3/5] 修改 DTSI UBI 分区（如有）..."
-
-if [ -f "${DTS_DIR}/${DTS_NEW}.dtsi" ]; then
-    # 在 partition@5c0000 节点里加上 reg 属性
+echo "[步骤 3/5] 更新DTSI中UBI分区定义"
+[ -f "${DTS_DIR}/${DTS_NEW}.dtsi" ] && {
     sed -i -e '/partition@5c0000 {/,/^[ \t]*};/ {
         s|compatible = "linux,ubi";|reg = <0x5c0000 0x1FA40000>;\n\t\tcompatible = "linux,ubi";|
     }' "${DTS_DIR}/${DTS_NEW}.dtsi"
-    ok "DTSI UBI 分区已更新"
-else
-    info "无 .dtsi 文件，跳过 UBI 修改"
-fi
+    ok "UBI分区配置已更新为512MB"
+} || info "无DTSI文件，跳过UBI修改"
 
-#==============================================================
-# 步骤 4：写入 Image Makefile
-#==============================================================
+# -------------- 步骤4：写入25.12格式设备定义 --------------
 echo ""
-echo "[步骤 4/5] 写入 ${IMAGE_MK}..."
-
-# 检查是否已存在，避免重复添加
+echo "[步骤 4/5] 写入25.12专属Makefile设备定义"
 if grep -q "define Device/${DEVICE_NAME}" "${IMAGE_MK}"; then
-    warn "设备 ${DEVICE_NAME} 已存在于 ${IMAGE_MK}，跳过写入"
+    warn "设备 ${DEVICE_NAME} 已存在，跳过写入"
 else
-    # 兼容 24.x 和 25.x 的 define Device 写法
     cat >> "${IMAGE_MK}" << MK_EOF
 
 define Device/${DEVICE_NAME}
@@ -209,18 +124,14 @@ define Device/${DEVICE_NAME}
 endef
 TARGET_DEVICES += ${DEVICE_NAME}
 MK_EOF
-    ok "${IMAGE_MK} 已写入"
+    ok "25.12版本设备定义已写入 ${IMAGE_MK}"
 fi
 
-#==============================================================
-# 步骤 5：写入 .targetinfo
-#==============================================================
+# -------------- 步骤5：写入25.12标准targetinfo --------------
 echo ""
-echo "[步骤 5/5] 写入 ${TARGETINFO}..."
-
-# 24.x 和 25.x 格式一致：YAML，空格缩进（不能用 Tab！）
+echo "[步骤 5/5] 写入25.12专属.targetinfo配置"
 if grep -q "^${DEVICE_NAME}:" "${TARGETINFO}" 2>/dev/null; then
-    warn "${DEVICE_NAME} 已存在于 .targetinfo，跳过"
+    warn "${DEVICE_NAME} 已存在于.targetinfo，跳过写入"
 else
     cat >> "${TARGETINFO}" << TI_EOF
 
@@ -238,59 +149,51 @@ ${DEVICE_NAME}:
   PAGESIZE: ${PAGESIZE}
   UBINIZE_OPTS: ${UBINIZE_OPTS}
 TI_EOF
-    ok "${TARGETINFO} 已追加"
+    ok "25.12专属.targetinfo配置已追加"
 fi
 
-# 自动替换.targetinfo里所有Tab为4个空格，完全兼容25.x缩进校验
-info "自动规范化.targetinfo缩进，替换所有Tab为空格"
+# 自动规范化缩进，完全规避25.12的Tab字符校验
+info "自动规范化.targetinfo缩进，替换所有Tab为4个空格"
 sed -i 's/\t/    /g' "${TARGETINFO}"
 
-#==============================================================
-# 验证
-#==============================================================
+# -------------- 25.12专属缓存清理与验证 --------------
 echo ""
 echo "============================================="
-echo "  验证设备是否被识别..."
+echo "  清理构建缓存，验证设备识别状态"
 echo "============================================="
-
 make clean >/dev/null 2>&1 || true
 
 if make info 2>/dev/null | grep -q "${DEVICE_NAME}"; then
-    ok "✅ ${DEVICE_NAME} 已被 ImageBuilder 识别！"
+    ok "✅ ${DEVICE_NAME} 已被ImmortalWrt 25.12.x ImageBuilder完全识别！"
 else
-    warn "⚠️  make info 未找到 ${DEVICE_NAME}，请检查："
-    echo "  1. ${IMAGE_MK} 中 TARGET_DEVICES 是否追加成功"
-    echo "  2. ${TARGETINFO} 缩进必须用空格（不能用 Tab）"
+    warn "⚠️  make info 未找到设备，请检查："
+    echo "  1. ${IMAGE_MK} 中TARGET_DEVICES是否追加成功"
+    echo "  2. ${TARGETINFO} 缩进是否全部为空格，无Tab字符"
     echo "  3. ${DTS_DIR}/${DTS_NEW}.dts 是否存在且语法正确"
-    echo "  4. 如果 25.x 报错，确认 ${SUBTARGET}.mk 是否改名为 Makefile"
 fi
 
-# 显示追加的内容
+# -------------- 显示最终生成的targetinfo内容 --------------
 echo ""
-info "${TARGETINFO} 中 ${DEVICE_NAME} 条目："
+info "${TARGETINFO} 中生成的设备条目："
 echo "----------------------------------------"
 grep -A 15 "^${DEVICE_NAME}:" "${TARGETINFO}" 2>/dev/null || echo "  (未找到)"
 echo "----------------------------------------"
 
-#==============================================================
-# 完成
-#==============================================================
+# -------------- 完成提示 --------------
 echo ""
 echo "============================================="
-echo "  ✅ 全部完成！"
+echo "  ✅ ImmortalWrt 25.12.x 适配全部完成"
 echo "============================================="
 echo ""
-echo " 📦 构建固件："
+echo " 📦 构建固件命令："
 echo "    make image PROFILE=\"${DEVICE_NAME}\""
 echo ""
-echo " 📂 输出位置："
+echo " 📂 固件输出路径："
 echo "    bin/targets/${PLATFORM}/${SUBTARGET}/"
 echo ""
-echo " 🔧 添加额外软件包："
-echo "    make image PROFILE=\"${DEVICE_NAME}\" \\"
-echo "        PACKAGES=\"kmod-xxx kmod-yyy\""
+echo " 🔧 自定义扩展软件包："
+echo "    make image PROFILE=\"${DEVICE_NAME}\" PACKAGES=\"kmod-xxx kmod-yyy\""
 echo ""
 echo " 📏 调整根分区大小："
-echo "    make image PROFILE=\"${DEVICE_NAME}\" \\"
-echo "        ROOTFS_PARTSIZE=\"1024\""
+echo "    make image PROFILE=\"${DEVICE_NAME}\" ROOTFS_PARTSIZE=\"1024\""
 echo "============================================="
