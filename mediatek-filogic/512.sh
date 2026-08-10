@@ -1,15 +1,14 @@
-
 #!/bin/bash
 
 # ==============================================================================
-# ImmortalWrt ImageBuilder DIY Script: Cudy TR3000 512MB NAND Mod
-# Fixed: Robust heredoc handling, Manual metadata generation, Error checking
+# ImmortalWrt ImageBuilder DIY Script: Cudy TR3000 512MB NAND Mod (Final Fix)
+# Fixes: DTS Include Link, Kernel Build Rule, Manual Metadata Generation
 # ==============================================================================
 
 set -e # 遇到错误立即退出
 set -o pipefail
 
-echo ">>> [Step 1/4] Checking environment and files..."
+echo ">>> [Step 1/5] Checking environment and files..."
 
 # 定义变量
 BOARD="mediatek"
@@ -36,14 +35,13 @@ echo "[+] Environment check passed."
 # ==============================================================================
 # Step 2: Modify DTS Files for 512MB NAND
 # ==============================================================================
-echo ">>> [Step 2/4] Modifying Device Tree (DTS) for 512MB NAND..."
+echo ">>> [Step 2/5] Modifying Device Tree (DTS) for 512MB NAND..."
 
 # 1. Copy original DTS files to new variant
 cp "${DTS_DIR}/${DTS_BASE}.dts" "${DTS_DIR}/${DTS_NEW}.dts"
 cp "${DTS_DIR}/${DTS_BASE}.dtsi" "${DTS_DIR}/${DTS_NEW}.dtsi"
 
 # 2. Enable USB Power (GPIO Output 0 = High/On for this board usually)
-# 注意：如果原文件已经是 <0> 或没有该行，sed 可能不匹配，这里增加容错
 if grep -q "gpio-export,output = <1>;" "${DTS_DIR}/${DTS_NEW}.dtsi"; then
     sed -i 's/gpio-export,output = <1>;/gpio-export,output = <0>;/' "${DTS_DIR}/${DTS_NEW}.dtsi"
     echo "[-] USB GPIO power enabled."
@@ -61,7 +59,6 @@ else
 fi
 
 # 4. Update UBI Partition Reg in .dtsi
-# Replace the reg property inside the partition block
 if grep -q "reg = <0x5c0000 0x4000000>;" "${DTS_DIR}/${DTS_NEW}.dtsi"; then
     sed -i '/partition@5c0000 {/,/};/{
         s/reg = <0x5c0000 0x4000000>;/reg = <0x5c0000 0x1FA40000>;/
@@ -71,20 +68,30 @@ else
     echo "[!] Warning: Could not find original UBI reg in .dtsi, check manually."
 fi
 
+# 5. 【关键修复】修正 DTS 文件的 include 引用
+# 确保 .dts 文件引用的是新的 .dtsi 文件，而不是旧的
+if grep -q '#include "mt7981b-cudy-tr3000-v1.dtsi"' "${DTS_DIR}/${DTS_NEW}.dts"; then
+    sed -i 's|#include "mt7981b-cudy-tr3000-v1.dtsi"|#include "mt7981b-cudy-tr3000-512mb-v1.dtsi"|' "${DTS_DIR}/${DTS_NEW}.dts"
+    echo "[-] DTS include reference fixed."
+elif grep -q '#include "mt7981b-cudy-tr3000-512mb-v1.dtsi"' "${DTS_DIR}/${DTS_NEW}.dts"; then
+    echo "[-] DTS include reference already correct."
+else
+    echo "[!] Warning: Could not find include line in .dts, please check manually."
+fi
+
 echo "[+] DTS files modified successfully."
 
 # ==============================================================================
-# Step 3: Inject Device Definition into filogic.mk
+# Step 3: Inject Device Definition into filogic.mk with Kernel Rule
 # ==============================================================================
-echo ">>> [Step 3/4] Injecting device definition into ${MK_FILE}..."
+echo ">>> [Step 3/5] Injecting device definition into ${MK_FILE}..."
 
 if grep -q "define Device/${DEVICE_NAME}" "${MK_FILE}"; then
     echo "[*] Device definition already exists in ${MK_FILE}, skipping injection."
 else
-    echo "[-] Appending new device definition..."
+    echo "[-] Appending new device definition with KERNEL rule..."
     
-    # 【关键修复】使用 cat >> file << 'EOF' 确保内容原样写入，且 EOF 必须顶格
-    # 注意：EOF 前后不能有空格或Tab
+    # 【关键修复】增加 KERNEL 定义，解决 "No rule to make target ... kernel.bin" 错误
     cat >> "${MK_FILE}" << 'ENDOFMAKEFILE'
 
 define Device/cudy_tr3000-512mb-v1
@@ -99,6 +106,8 @@ define Device/cudy_tr3000-512mb-v1
   PAGESIZE := 2048
   IMAGE_SIZE := 507904k
   KERNEL_IN_UBI := 1
+  # 显式定义内核生成规则，确保 kernel.bin 能被正确构建
+  KERNEL := kernel-bin | lzma | uImage lzma
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   DEVICE_PACKAGES := kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount
 endef
@@ -117,7 +126,7 @@ fi
 # Step 4: Manually Generate .targetinfo and .profiles.mk
 # Bypasses automatic generation failures
 # ==============================================================================
-echo ">>> [Step 4/4] Manually generating metadata cache..."
+echo ">>> [Step 4/5] Manually generating metadata cache..."
 
 # Clean old cache
 rm -f .targetinfo .profiles.mk
@@ -157,6 +166,15 @@ ENDOFPROFILES
 echo "[+] Metadata cache generated manually."
 
 # ==============================================================================
+# Step 5: Clean Build Directory to Force Re-compilation
+# ==============================================================================
+echo ">>> [Step 5/5] Cleaning build directory to force kernel re-build..."
+
+# 必须清理掉之前失败的内核编译缓存，否则 Make 会认为目标已存在（虽然是空的或错误的）
+rm -rf build_dir/target-aarch64_cortex-a53_musl/linux-mediatek_filogic/
+echo "[-] Build directory cleaned."
+
+# ==============================================================================
 # Final Verification
 # ==============================================================================
 echo ""
@@ -166,8 +184,9 @@ echo ">>> Verifying profile availability..."
 if grep -q "cudy_tr3000-512mb-v1" .profiles.mk; then
     echo "[SUCCESS] Profile 'cudy_tr3000-512mb-v1' is ready."
     echo ""
-    echo "You can now build the image using:"
-    echo "make image PROFILE=cudy_tr3000-512mb-v1 FILES=files"
+    echo "Next steps:"
+    echo "1. Run 'make info' to confirm the profile is listed."
+    echo "2. Run 'make image PROFILE=cudy_tr3000-512mb-v1 FILES=files' to build."
 else
     echo "[FAILED] Profile verification failed. Please check .profiles.mk content."
     exit 1
