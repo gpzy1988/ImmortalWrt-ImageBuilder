@@ -1,8 +1,8 @@
 #!/bin/bash
 #==============================================================
-# ImmortalWrt 24.x / 25.x ImageBuilder 通用设备添加模板
-# 兼容：ImmortalWrt 24.10、25.xx
-# 用法：修改【用户配置区】后直接执行
+# ImmortalWrt 24.x / 25.x ImageBuilder 通用设备添加模板（修复版）
+# 兼容：ImmortalWrt 24.10、25.xx（含25.12.1最新版）
+# 已修复：25.12.x make info 识别不到设备的问题
 #==============================================================
 
 #==============================================================
@@ -25,6 +25,8 @@ DEVICE_VENDOR="Cudy"
 DEVICE_MODEL="TR3000"
 # 变体说明
 DEVICE_VARIANT="v1 (512MB NAND)"
+# 设备完整标题
+DEVICE_TITLE="${DEVICE_VENDOR} ${DEVICE_MODEL} ${DEVICE_VARIANT}"
 
 # ---- 3. DTS 文件 ----
 # ⚠️ 基础 DTS 必须已经存在于你的 ImageBuilder 里！
@@ -53,7 +55,7 @@ KERNEL_IN_UBI="1"
 
 # ---- 6. 默认软件包（空格分隔）----
 # 不需要可以留空 ""
-DEVICE_PACKAGES="kmod-usb3 kmod-mt7915e kmod-mt7981-firmware automount"
+DEVICE_PACKAGES="kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount"
 
 #==============================================================
 # 【脚本主体】——下面不用动
@@ -62,7 +64,11 @@ DEVICE_PACKAGES="kmod-usb3 kmod-mt7915e kmod-mt7981-firmware automount"
 set -e
 
 # ---- 路径变量 ----
-IB_DIR="$(pwd)"
+IB_DIR="/home/build/immortalwrt"
+# 如果不在Docker环境则自动切换为当前目录运行
+if [ ! -d "${IB_DIR}" ]; then
+    IB_DIR="$(pwd)"
+fi
 DTS_DIR="${IB_DIR}/target/linux/${PLATFORM}/dts"
 IMAGE_MK="${IB_DIR}/target/linux/${PLATFORM}/image/${SUBTARGET}.mk"
 TARGETINFO="${IB_DIR}/target/linux/${PLATFORM}/image/${SUBTARGET}.targetinfo"
@@ -83,7 +89,7 @@ ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
 #==============================================================
 echo ""
 echo "============================================="
-echo "  ImmortalWrt 24.x/25.x 通用设备添加模板"
+echo "  ImmortalWrt 24.x/25.x 通用设备添加模板（修复版）"
 echo "  目标: ${PLATFORM}/${SUBTARGET} / ${DEVICE_NAME}"
 echo "============================================="
 
@@ -96,17 +102,33 @@ fi
 
 # 检查 .mk 是否存在
 if [ ! -f "${IMAGE_MK}" ]; then
-    error "Image Makefile 不存在: ${IMAGE_MK}"
-    echo "  请确认 PLATFORM='${PLATFORM}' SUBTARGET='${SUBTARGET}' 是否正确"
-    echo "  可执行: ls ${IB_DIR}/target/linux/${PLATFORM}/image/"
-    exit 1
+    # 25.x 部分平台可能改名了，检查备选路径
+    ALT_MK="${IB_DIR}/target/linux/${PLATFORM}/image/${SUBTARGET}/Makefile"
+    if [ -f "${ALT_MK}" ]; then
+        IMAGE_MK="${ALT_MK}"
+        info "检测到 25.x 备选路径，使用: ${ALT_MK}"
+    else
+        error "Image Makefile 不存在: ${IMAGE_MK} / ${ALT_MK}"
+        echo "  请确认 PLATFORM='${PLATFORM}' SUBTARGET='${SUBTARGET}' 是否正确"
+        echo "  可执行: ls ${IB_DIR}/target/linux/${PLATFORM}/image/"
+        exit 1
+    fi
 fi
 
-# 25.x 部分平台可能改名了，检查备选路径
-ALT_MK="${IB_DIR}/target/linux/${PLATFORM}/image/${SUBTARGET}/Makefile"
-if [ ! -f "${IMAGE_MK}" ] && [ -f "${ALT_MK}" ]; then
-    IMAGE_MK="${ALT_MK}"
-    info "检测到 25.x 备选路径，使用: ${ALT_MK}"
+# 自动匹配.targetinfo对应路径
+if [[ "${IMAGE_MK}" == *"Makefile" ]]; then
+    TARGETINFO="$(dirname "${IMAGE_MK}")/${SUBTARGET}.targetinfo"
+fi
+
+#==============================================================
+# 步骤 0.5：Cudy TR3000专属适配 - USB供电默认关闭
+#==============================================================
+echo ""
+info "开启USB供电默认关闭配置"
+if [ -f "${DTS_DIR}/${DTS_BASE}.dtsi" ]; then
+    sed -i '/modem-power/,/};/ {s/gpio-export,output = <1>;/gpio-export,output = <0>;/}' \
+        "${DTS_DIR}/${DTS_BASE}.dtsi"
+    ok "USB供电默认状态已修改为关闭"
 fi
 
 #==============================================================
@@ -161,7 +183,7 @@ fi
 # 步骤 4：写入 Image Makefile
 #==============================================================
 echo ""
-echo "[步骤 4/5] 写入 ${SUBTARGET}.mk..."
+echo "[步骤 4/5] 写入 ${IMAGE_MK}..."
 
 # 检查是否已存在，避免重复添加
 if grep -q "define Device/${DEVICE_NAME}" "${IMAGE_MK}"; then
@@ -176,7 +198,7 @@ define Device/${DEVICE_NAME}
   DEVICE_VARIANT := ${DEVICE_VARIANT}
   DEVICE_DTS := ${DTS_NEW}
   DEVICE_DTS_DIR := ../dts
-  SUPPORTED_DEVICES += ${DEVICE_NAME}
+  SUPPORTED_DEVICES += R47-512MB
   UBINIZE_OPTS := ${UBINIZE_OPTS}
   BLOCKSIZE := ${BLOCKSIZE}
   PAGESIZE := ${PAGESIZE}
@@ -194,7 +216,7 @@ fi
 # 步骤 5：写入 .targetinfo
 #==============================================================
 echo ""
-echo "[步骤 5/5] 写入 ${SUBTARGET}.targetinfo..."
+echo "[步骤 5/5] 写入 ${TARGETINFO}..."
 
 # 24.x 和 25.x 格式一致：YAML，空格缩进（不能用 Tab！）
 if grep -q "^${DEVICE_NAME}:" "${TARGETINFO}" 2>/dev/null; then
@@ -204,6 +226,7 @@ else
 
 ${DEVICE_NAME}:
   TARGET_DEVICE: ${DEVICE_NAME}
+  DEVICE_TITLE: ${DEVICE_TITLE}
   KERNEL: ${KERNEL_VER}
   PROFILES: Default
   PLATFORM: ${PLATFORM}/${SUBTARGET}
@@ -217,6 +240,10 @@ ${DEVICE_NAME}:
 TI_EOF
     ok "${TARGETINFO} 已追加"
 fi
+
+# 自动替换.targetinfo里所有Tab为4个空格，完全兼容25.x缩进校验
+info "自动规范化.targetinfo缩进，替换所有Tab为空格"
+sed -i 's/\t/    /g' "${TARGETINFO}"
 
 #==============================================================
 # 验证
@@ -240,7 +267,7 @@ fi
 
 # 显示追加的内容
 echo ""
-echo "[INFO] ${TARGETINFO} 中 ${DEVICE_NAME} 条目："
+info "${TARGETINFO} 中 ${DEVICE_NAME} 条目："
 echo "----------------------------------------"
 grep -A 15 "^${DEVICE_NAME}:" "${TARGETINFO}" 2>/dev/null || echo "  (未找到)"
 echo "----------------------------------------"
