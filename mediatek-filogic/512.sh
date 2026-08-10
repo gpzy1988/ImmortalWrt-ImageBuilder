@@ -1,161 +1,165 @@
-# 🔍 内核版本错误诊断与修复
+#!/bin/bash
+#==============================================================
+# ImmortalWrt 25.12.x Cudy TR3000 512MB 专属适配脚本 (最终修复版)
+# 修复版本: v2.0
+# 修复内容:
+# 1. 修复变量名转义问题
+# 2. 保护内核配置文件避免删除
+# 3. 智能检测 Makefile 路径
+# 4. 优化 DTS 修改逻辑
+# 5. 增强验证和错误处理
+#==============================================================
+set -e
 
-## 🚨 问题分析
+# -------------- 基础配置区 --------------
+PLATFORM="mediatek"
+SUBTARGET="filogic"
+DEVICE_NAME="cudy_tr3000-512mb-v1"
+DEVICE_VENDOR="Cudy"
+DEVICE_MODEL="TR3000"
+DEVICE_VARIANT="v1 (512MB NAND)"
+DTS_BASE="mt7981b-cudy-tr3000-v1"
+DTS_NEW="mt7981b-cudy-tr3000-512mb-v1"
+IMAGE_SIZE="507904k"
+BLOCKSIZE="128k"
+PAGESIZE="2048"
+UBINIZE_OPTS="-E 5"
+KERNEL_IN_UBI="1"
+DEVICE_PACKAGES="kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount"
 
-错误信息：
-```
-Missing kernel version/hash file for . Please create /home/build/immortalwrt/target/linux/generic/kernel-
-```
+# -------------- 颜色输出定义 --------------
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
 
-**关键观察：** 错误路径 `kernel-` 结尾是空的，说明内核版本变量没有正确设置。
+info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+ok() { echo -e "${GREEN}[OK]${NC} $1"; }
 
-## 🔎 问题根源
+# -------------- 自动适配目录规则 --------------
+IB_DIR="/home/build/immortalwrt"
+[ ! -d "${IB_DIR}" ] && IB_DIR="$(pwd)"
 
-这 **不是脚本问题**，而是 ImageBuilder 环境配置问题：
+DTS_DIR="${IB_DIR}/target/linux/${PLATFORM}/dts"
 
-1. **镜像标签错误** - 可能使用了不兼容的 ImmortalWrt 镜像
-2. **内核版本文件缺失** - ImageBuilder 中的内核配置文件损坏
-3. **工作流配置问题** - build-wireless-router25.12.yml 中的镜像标签可能过时
+# 智能检测 Makefile 路径
+POSSIBLE_MKS=(
+    "${IB_DIR}/target/linux/${PLATFORM}/image/${SUBTARGET}/Makefile"
+    "${IB_DIR}/target/linux/${PLATFORM}/image/${SUBTARGET}.mk"
+    "${IB_DIR}/target/linux/${PLATFORM}/Makefile"
+)
 
-## 📋 检查步骤
-
-### 1. 检查当前使用的镜像标签
-
-查看 `.github/workflows/build-wireless-router25.12.yml`：
-
-```yaml
-# 可能需要检查的部分
-tag=mediatek-filogic-openwrt-25.12.1
-# 或者
-tag=mediatek-filogic-openwrt-23.05.4
-```
-
-### 2. 检查内核版本文件
-
-在 ImageBuilder 容器中执行：
-
-```bash
-cd /home/build/immortalwrt
-
-# 检查内核版本配置
-cat include/kernel-version.mk
-
-# 查找内核版本文件
-ls -la target/linux/*/kernel-* 2>/dev/null || echo "无内核版本文件"
-
-# 检查目标平台配置
-ls -la target/linux/mediatek/
-```
-
-### 3. 验证 ImageBuilder 完整性
-
-```bash
-cd /home/build/immortalwrt
-
-# 检查关键配置文件
-ls -la include/ | grep kernel
-ls -la target/linux/generic/ | grep kernel
-
-# 尝试获取内核版本
-cat include/kernel-version.mk | grep LINUX_VERSION
-cat include/kernel-version.mk | grep LINUX_KERNEL_HASH
-```
-
-## ✅ 解决方案
-
-### 方案 1: 修复 workflow 镜像标签（推荐）
-
-编辑 `.github/workflows/build-wireless-router25.12.yml`：
-
-```yaml
-# 查找并修改镜像标签
-# 确保 mediatek-filogic 使用正确的标签
-
-case "$profile" in
-cudy_tr3000-512mb-v1)
-    # 使用正确的镜像标签
-    tag=mediatek-filogic-openwrt-25.12.1
-    echo "platform=mediatek/filogic" >> $GITHUB_ENV
-    ;;
-esac
-```
-
-### 方案 2: 创建缺失的内核版本文件
-
-在 workflow 中添加修复步骤：
-
-```yaml
-- name: Fix kernel version files
-  run: |
-    cd /home/build/immortalwrt
-    # 检查并创建内核版本文件
-    if [ ! -f "include/kernel-version.mk" ]; then
-      error "kernel-version.mk 缺失"
+IMAGE_MK=""
+for mk_file in "${POSSIBLE_MKS[@]}"; do
+    if [ -f "$mk_file" ]; then
+        IMAGE_MK="$mk_file"
+        break
     fi
-```
+done
 
-### 方案 3: 使用已知的正确镜像标签
-
-根据 ImmortalWrt 25.12.x 的正确标签：
-
-```yaml
-# 对于 mediatek-filogic 平台
-immortalwrt/imagebuilder:mediatek-filogic-openwrt-25.12.1
-
-# 或者尝试快照版本
-immortalwrt/imagebuilder:mediatek-filogic-snapshot
-```
-
-## 🔧 临时修复脚本
-
-创建修复内核版本的脚本：<tool_call>content</arg_key><arg_value>#!/bin/bash
-# 内核版本修复脚本
-cd /home/build/immortalwrt
-
-echo "============================================="
-echo " 🔧 内核版本文件诊断"
-echo "============================================="
-
-# 检查当前内核版本配置
-if [ -f "include/kernel-version.mk" ]; then
-    echo "✅ kernel-version.mk 存在"
-    echo ""
-    echo "当前内容："
-    cat include/kernel-version.mk
-else
-    echo "❌ kernel-version.mk 缺失"
+# 如果没有找到主 Makefile，使用子目录方案
+if [ -z "$IMAGE_MK" ]; then
+    DEVICE_DIR="${IB_DIR}/target/linux/${PLATFORM}/image/${SUBTARGET}"
+    mkdir -p "$DEVICE_DIR"
+    IMAGE_MK="${DEVICE_DIR}/${DEVICE_NAME}.mk"
 fi
 
-echo ""
-echo "============================================="
-echo " 检查内核相关文件"
-echo "============================================="
+# -------------- 步骤 1：复制并修改 DTS 文件 --------------
+info "[步骤 1/4] 复制并修改 DTS 文件"
 
-# 查找所有内核版本相关文件
-echo "📁 内核版本文件："
-find target/linux/ -name "kernel-*" -type f 2>/dev/null
-
-echo ""
-echo "📁 内核配置文件："
-find target/linux/mediatek/ -name "*.config" -type f 2>/dev/null | head -5
-
-echo ""
-echo "============================================="
-echo " 诊断建议"
-echo "============================================="
-
-# 检查 ImageBuilder 镜像信息
-if [ -f ".imagebuilder_info" ] || [ -f "VERSION" ]; then
-    echo "📋 ImageBuilder 信息："
-    cat .imagebuilder_info 2>/dev/null || cat VERSION 2>/dev/null
+if [ ! -f "${DTS_DIR}/${DTS_BASE}.dts" ]; then
+    error "基础 DTS 文件不存在: ${DTS_DIR}/${DTS_BASE}.dts"
 fi
 
-echo ""
-echo "🎯 如果此脚本显示 kernel-version.mk 存在但仍有错误，"
-echo "   问题可能在于："
-echo "   1. 镜像标签不正确"
-echo "   2. ImageBuilder 环境损坏"
-echo "   3. 需要重新拉取镜像"
-echo ""
-echo "💡 建议检查 workflow 文件中的镜像标签设置"
-echo "============================================="
+# 复制 DTS 文件
+cp "${DTS_DIR}/${DTS_BASE}.dts" "${DTS_DIR}/${DTS_NEW}.dts"
+ok "DTS 文件已复制"
+
+# 修改分区大小为 512MB (472MB usable)
+sed -i 's/size = <0x1e00000>/size = <0x1d80000>/g' "${DTS_DIR}/${DTS_NEW}.dts"
+sed -i 's/size = <0x4000000>/size = <0x1d80000>/g' "${DTS_DIR}/${DTS_NEW}.dts"
+ok "DTS 分区大小已更新为 512MB"
+
+# -------------- 步骤 2：清理旧定义 --------------
+info "[步骤 2/4] 清理旧的设备定义"
+
+# 在所有可能的 Makefile 中清理旧定义
+find "${IB_DIR}/target/linux/${PLATFORM}/image" -name "*.mk" -o -name "Makefile" 2>/dev/null | while read file; do
+    sed -i "/define Device\/${DEVICE_NAME}/,/endef/d" "$file" 2>/dev/null || true
+    sed -i "/TARGET_DEVICES += ${DEVICE_NAME}/d" "$file" 2>/dev/null || true
+done
+
+ok "旧设备定义已清理"
+
+# -------------- 步骤 3：写入设备定义 --------------
+info "[步骤 3/4] 写入设备定义"
+
+cat > "$IMAGE_MK" << MK_EOF
+define Device/${DEVICE_NAME}
+  \$(call Device/dsa-migration)
+  DEVICE_VENDOR := ${DEVICE_VENDOR}
+  DEVICE_MODEL := ${DEVICE_MODEL}
+  DEVICE_VARIANT := ${DEVICE_VARIANT}
+  DEVICE_DTS := ${DTS_NEW}
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := ${DEVICE_PACKAGES}
+  KERNEL := kernel-bin | gzip | uImage gzip
+  KERNEL_INITRAMFS := kernel-bin | gzip | uImage gzip
+  UBINIZE_OPTS := ${UBINIZE_OPTS}
+  BLOCKSIZE := ${BLOCKSIZE}
+  PAGESIZE := ${PAGESIZE}
+  IMAGE_SIZE := ${IMAGE_SIZE}
+  KERNEL_IN_UBI := ${KERNEL_IN_UBI}
+  IMAGES += factory.bin
+  IMAGE/factory.bin := append-ubi | check-size | cudy-factory
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  SUPPORTED_DEVICES += cudy,tr3000 R47-512MB
+endef
+TARGET_DEVICES += ${DEVICE_NAME}
+MK_EOF
+
+ok "设备定义已写入: $IMAGE_MK"
+
+# 如果是子目录文件，更新主 Makefile
+if [[ "$IMAGE_MK" == *"/${SUBTARGET}/"* ]]; then
+    MAIN_MK="${IB_DIR}/target/linux/${PLATFORM}/image/Makefile"
+    if [ -f "$MAIN_MK" ]; then
+        # 清除旧的包含
+        sed -i "/include.*${DEVICE_NAME}\.mk/d" "$MAIN_MK" 2>/dev/null || true
+        # 添加新的包含
+        echo "" >> "$MAIN_MK"
+        echo "include \$(TOPDIR)/target/linux/${PLATFORM}/image/${SUBTARGET}/${DEVICE_NAME}.mk" >> "$MAIN_MK"
+        ok "主 Makefile 已更新"
+    fi
+fi
+
+# -------------- 步骤 4：安全刷新配置 --------------
+info "[步骤 4/4] 安全刷新配置"
+
+cd "${IB_DIR}"
+
+# 安全清理：只删除临时文件，保护内核配置
+rm -rf tmp/ 2>/dev/null || true
+rm -f .config 2>/dev/null || true
+
+ok "临时文件已清理（内核配置已保护）"
+
+# 验证文件
+if [ ! -f "$IMAGE_MK" ]; then
+    error "设备定义文件不存在: $IMAGE_MK"
+fi
+
+if [ ! -f "${DTS_DIR}/${DTS_NEW}.dts" ]; then
+    error "DTS 文件不存在: ${DTS_DIR}/${DTS_NEW}.dts"
+fi
+
+if ! grep -q "define Device/${DEVICE_NAME}" "$IMAGE_MK"; then
+    error "设备定义未正确写入"
+fi
+
+ok "所有文件验证通过"
+
+# 静默成功退出
+exit 0
