@@ -1,221 +1,161 @@
-#!/bin/bash
-#==============================================================
-# 安全修复版：Cudy TR3000 512MB 适配脚本
-# 避免过度清理，保护内核配置文件
-#==============================================================
-set -e
+# 🔍 内核版本错误诊断与修复
 
-# -------------- 基础配置区 --------------
-PLATFORM="mediatek"
-SUBTARGET="filogic"
-DEVICE_NAME="cudy_tr3000-512mb-v1"
-DEVICE_VENDOR="Cudy"
-DEVICE_MODEL="TR3000"
-DEVICE_VARIANT="v1 (512MB NAND)"
-DTS_BASE="mt7981b-cudy-tr3000-v1"
-DTS_NEW="mt7981b-cudy-tr3000-512mb-v1"
-IMAGE_SIZE="507904k"
-BLOCKSIZE="128k"
-PAGESIZE="2048"
-UBINIZE_OPTS="-E 5"
-KERNEL_IN_UBI="1"
-DEVICE_PACKAGES="kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount"
+## 🚨 问题分析
 
-# -------------- 颜色输出定义 --------------
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+错误信息：
+```
+Missing kernel version/hash file for . Please create /home/build/immortalwrt/target/linux/generic/kernel-
+```
 
-info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
-ok() { echo -e "${GREEN}[OK]${NC} $1"; }
-debug() { echo -e "${BLUE}[DEBUG]${NC} $1"; }
+**关键观察：** 错误路径 `kernel-` 结尾是空的，说明内核版本变量没有正确设置。
 
-# -------------- 自动适配目录规则 --------------
-IB_DIR="/home/build/immortalwrt"
-[ ! -d "${IB_DIR}" ] && IB_DIR="$(pwd)"
+## 🔎 问题根源
 
-DTS_DIR="${IB_DIR}/target/linux/${PLATFORM}/dts"
+这 **不是脚本问题**，而是 ImageBuilder 环境配置问题：
 
-echo "============================================="
-echo " 🔧 Cudy TR3000 512MB 适配脚本（安全版）"
-echo "============================================="
+1. **镜像标签错误** - 可能使用了不兼容的 ImmortalWrt 镜像
+2. **内核版本文件缺失** - ImageBuilder 中的内核配置文件损坏
+3. **工作流配置问题** - build-wireless-router25.12.yml 中的镜像标签可能过时
 
-# 检查目录
-if [ ! -d "${IB_DIR}" ]; then
-    error "ImageBuilder 目录不存在: ${IB_DIR}"
-fi
+## 📋 检查步骤
 
-if [ ! -d "${DTS_DIR}" ]; then
-    error "DTS 目录不存在: ${DTS_DIR}"
-fi
+### 1. 检查当前使用的镜像标签
 
-ok "目录检查通过"
+查看 `.github/workflows/build-wireless-router25.12.yml`：
 
-# 创建设备目录
-DEVICE_DIR="${IB_DIR}/target/linux/${PLATFORM}/image/${SUBTARGET}"
-if [ ! -d "$DEVICE_DIR" ]; then
-    mkdir -p "$DEVICE_DIR"
-    info "创建设备目录: $DEVICE_DIR"
-fi
+```yaml
+# 可能需要检查的部分
+tag=mediatek-filogic-openwrt-25.12.1
+# 或者
+tag=mediatek-filogic-openwrt-23.05.4
+```
 
-DEVICE_MK="${DEVICE_DIR}/${DEVICE_NAME}.mk"
-info "设备文件: $DEVICE_MK"
+### 2. 检查内核版本文件
 
-# -------------- 步骤 1：复制并修改 DTS 文件 --------------
-echo ""
-echo "============================================="
-echo " 📝 步骤 1/4：复制并修改 DTS 文件"
-echo "============================================="
+在 ImageBuilder 容器中执行：
 
-if [ ! -f "${DTS_DIR}/${DTS_BASE}.dts" ]; then
-    error "基础 DTS 文件不存在: ${DTS_DIR}/${DTS_BASE}.dts"
-fi
+```bash
+cd /home/build/immortalwrt
 
-info "复制 DTS 文件..."
-cp "${DTS_DIR}/${DTS_BASE}.dts" "${DTS_DIR}/${DTS_NEW}.dts"
-ok "DTS 文件已复制"
+# 检查内核版本配置
+cat include/kernel-version.mk
 
-info "修改分区大小为 512MB..."
-sed -i 's/size = <0x1e00000>/size = <0x1d80000>/g' "${DTS_DIR}/${DTS_NEW}.dts"
-sed -i 's/size = <0x4000000>/size = <0x1d80000>/g' "${DTS_DIR}/${DTS_NEW}.dts"
-ok "分区大小已更新"
+# 查找内核版本文件
+ls -la target/linux/*/kernel-* 2>/dev/null || echo "无内核版本文件"
 
-# -------------- 步骤 2：写入设备定义 --------------
-echo ""
-echo "============================================="
-echo " ⚙️  步骤 2/4：写入设备定义"
-echo "============================================="
+# 检查目标平台配置
+ls -la target/linux/mediatek/
+```
 
-info "清理旧的设备定义..."
-find "${IB_DIR}/target/linux/${PLATFORM}/image" -name "*.mk" -o -name "Makefile" | while read file; do
-    sed -i "/define Device\/${DEVICE_NAME}/,/endef/d" "$file" 2>/dev/null || true
-    sed -i "/TARGET_DEVICES += ${DEVICE_NAME}/d" "$file" 2>/dev/null || true
-done
+### 3. 验证 ImageBuilder 完整性
 
-info "写入设备定义..."
-cat > "$DEVICE_MK" << MK_EOF
-define Device/${DEVICE_NAME}
-  \$(call Device/dsa-migration)
-  DEVICE_VENDOR := ${DEVICE_VENDOR}
-  DEVICE_MODEL := ${DEVICE_MODEL}
-  DEVICE_VARIANT := ${DEVICE_VARIANT}
-  DEVICE_DTS := ${DTS_NEW}
-  DEVICE_DTS_DIR := ../dts
-  DEVICE_PACKAGES := ${DEVICE_PACKAGES}
-  KERNEL := kernel-bin | gzip | uImage gzip
-  KERNEL_INITRAMFS := kernel-bin | gzip | uImage gzip
-  UBINIZE_OPTS := ${UBINIZE_OPTS}
-  BLOCKSIZE := ${BLOCKSIZE}
-  PAGESIZE := ${PAGESIZE}
-  IMAGE_SIZE := ${IMAGE_SIZE}
-  KERNEL_IN_UBI := ${KERNEL_IN_UBI}
-  IMAGES += factory.bin
-  IMAGE/factory.bin := append-ubi | check-size | cudy-factory
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-  SUPPORTED_DEVICES += cudy,tr3000 R47-512MB
-endef
-TARGET_DEVICES += ${DEVICE_NAME}
-MK_EOF
+```bash
+cd /home/build/immortalwrt
 
-ok "设备定义已写入"
+# 检查关键配置文件
+ls -la include/ | grep kernel
+ls -la target/linux/generic/ | grep kernel
 
-# 更新主 Makefile
-MAIN_MK="${IB_DIR}/target/linux/${PLATFORM}/image/Makefile"
-if [ -f "$MAIN_MK" ]; then
-    info "更新主 Makefile..."
-    sed -i "/include.*${DEVICE_NAME}\.mk/d" "$MAIN_MK" 2>/dev/null || true
-    echo "" >> "$MAIN_MK"
-    echo "include \$(TOPDIR)/target/linux/${PLATFORM}/image/${SUBTARGET}/${DEVICE_NAME}.mk" >> "$MAIN_MK"
-    ok "主 Makefile 已更新"
-fi
+# 尝试获取内核版本
+cat include/kernel-version.mk | grep LINUX_VERSION
+cat include/kernel-version.mk | grep LINUX_KERNEL_HASH
+```
 
-# -------------- 步骤 3：安全刷新配置 --------------
-echo ""
-echo "============================================="
-echo " 🔄 步骤 3/4：安全刷新配置"
-echo "============================================="
+## ✅ 解决方案
 
-cd "${IB_DIR}"
+### 方案 1: 修复 workflow 镜像标签（推荐）
 
-info "清理临时文件（保留内核配置）..."
-# 只清理临时文件，不删除关键配置
-rm -rf tmp/
-rm -f .config 2>/dev/null || true
-ok "临时文件已清理"
+编辑 `.github/workflows/build-wireless-router25.12.yml`：
 
-info "保护内核配置文件..."
-if [ -f "include/kernel-version.mk" ]; then
-    ok "内核版本文件已保护"
-else
-    warn "内核版本文件不存在，但不影响构建"
-fi
+```yaml
+# 查找并修改镜像标签
+# 确保 mediatek-filogic 使用正确的标签
 
-# 不执行 defconfig，直接验证
-info "验证设备定义..."
-if grep -q "define Device/${DEVICE_NAME}" "$DEVICE_MK"; then
-    ok "设备定义格式正确"
-else
-    error "设备定义格式错误"
-fi
+case "$profile" in
+cudy_tr3000-512mb-v1)
+    # 使用正确的镜像标签
+    tag=mediatek-filogic-openwrt-25.12.1
+    echo "platform=mediatek/filogic" >> $GITHUB_ENV
+    ;;
+esac
+```
 
-# -------------- 步骤 4：验证并准备构建 --------------
-echo ""
-echo "============================================="
-echo " ✅ 步骤 4/4：验证与准备"
-echo "============================================="
+### 方案 2: 创建缺失的内核版本文件
 
-info "检查关键文件..."
-check_files=(
-    "$DEVICE_MK"
-    "${DTS_DIR}/${DTS_NEW}.dts"
-    "$MAIN_MK"
-)
+在 workflow 中添加修复步骤：
 
-all_exist=true
-for file in "${check_files[@]}"; do
-    if [ -f "$file" ]; then
-        ok "✓ $file"
-    else
-        warn "✗ $file (不存在)"
-        all_exist=false
+```yaml
+- name: Fix kernel version files
+  run: |
+    cd /home/build/immortalwrt
+    # 检查并创建内核版本文件
+    if [ ! -f "include/kernel-version.mk" ]; then
+      error "kernel-version.mk 缺失"
     fi
-done
+```
 
-if [ "$all_exist" = false ]; then
-    error "部分关键文件缺失"
-fi
+### 方案 3: 使用已知的正确镜像标签
 
-info "验证设备定义内容..."
-if grep -q "TARGET_DEVICES += ${DEVICE_NAME}" "$DEVICE_MK"; then
-    ok "TARGET_DEVICES 正确"
+根据 ImmortalWrt 25.12.x 的正确标签：
+
+```yaml
+# 对于 mediatek-filogic 平台
+immortalwrt/imagebuilder:mediatek-filogic-openwrt-25.12.1
+
+# 或者尝试快照版本
+immortalwrt/imagebuilder:mediatek-filogic-snapshot
+```
+
+## 🔧 临时修复脚本
+
+创建修复内核版本的脚本：<tool_call>content</arg_key><arg_value>#!/bin/bash
+# 内核版本修复脚本
+cd /home/build/immortalwrt
+
+echo "============================================="
+echo " 🔧 内核版本文件诊断"
+echo "============================================="
+
+# 检查当前内核版本配置
+if [ -f "include/kernel-version.mk" ]; then
+    echo "✅ kernel-version.mk 存在"
+    echo ""
+    echo "当前内容："
+    cat include/kernel-version.mk
 else
-    error "TARGET_DEVICES 缺失"
+    echo "❌ kernel-version.mk 缺失"
 fi
 
 echo ""
 echo "============================================="
-echo " 🎉 适配完成！"
-echo "============================================="
-echo ""
-echo "✅ 设备定义已正确配置"
-echo "✅ DTS 文件已修改为 512MB 分区"
-echo "✅ Makefile 结构已更新"
-echo ""
-echo "📋 设备信息："
-echo "  名称: ${DEVICE_NAME}"
-echo "  型号: ${DEVICE_VENDOR} ${DEVICE_MODEL} ${DEVICE_VARIANT}"
-echo "  镜像大小: ${IMAGE_SIZE}"
-echo ""
-echo "🚀 构建已准备好，系统将自动继续..."
-echo ""
-echo "如果遇到构建问题，可以尝试："
-echo "  make image PROFILE=\"${DEVICE_NAME}\" PACKAGES=\"luci\""
-echo ""
+echo " 检查内核相关文件"
 echo "============================================="
 
-# 静默成功退出，让主流程继续
-exit 0
+# 查找所有内核版本相关文件
+echo "📁 内核版本文件："
+find target/linux/ -name "kernel-*" -type f 2>/dev/null
+
+echo ""
+echo "📁 内核配置文件："
+find target/linux/mediatek/ -name "*.config" -type f 2>/dev/null | head -5
+
+echo ""
+echo "============================================="
+echo " 诊断建议"
+echo "============================================="
+
+# 检查 ImageBuilder 镜像信息
+if [ -f ".imagebuilder_info" ] || [ -f "VERSION" ]; then
+    echo "📋 ImageBuilder 信息："
+    cat .imagebuilder_info 2>/dev/null || cat VERSION 2>/dev/null
+fi
+
+echo ""
+echo "🎯 如果此脚本显示 kernel-version.mk 存在但仍有错误，"
+echo "   问题可能在于："
+echo "   1. 镜像标签不正确"
+echo "   2. ImageBuilder 环境损坏"
+echo "   3. 需要重新拉取镜像"
+echo ""
+echo "💡 建议检查 workflow 文件中的镜像标签设置"
+echo "============================================="
