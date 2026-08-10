@@ -1,0 +1,37 @@
+name: Build Cudy TR3000 512MB ImmortalWrt 25.12.x
+
+on:
+  workflow_dispatch:  # 支持手动触发
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      # 官方 ImmortalWrt 25.12.x MediaTek Filogic ImageBuilder 镜像
+      image: immortalwrt/imagebuilder:mediatek-filogic-openwrt-25.12.1
+
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      - name: 赋予适配脚本执行权限
+        run: chmod +x ./scripts/auto-adapt-tr3000.sh
+
+      - name: 执行全自动适配脚本
+        run: ./scripts/auto-adapt-tr3000.sh
+
+      - name: 开始构建固件
+        run: |
+          cd /home/build/immortalwrt
+          make image PROFILE="cudy_tr3000-512mb-v1" \
+            PACKAGES="curl luci luci-i18n-base-zh-cn luci-i18n-firewall-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-diskman-zh-cn luci-i18n-package-manager-zh-cn luci-i18n-ttyd-zh-cn openssh-sftp-server luci-i18n-filemanager-zh-cn" \
+            ROOTFS_PARTSIZE="1024"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: immortalwrt-tr3000-512mb-firmware
+          path: bin/targets/mediatek/filogic/*.bin
+          retention-days: 30
