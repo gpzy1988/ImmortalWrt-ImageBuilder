@@ -1,35 +1,38 @@
 name: Build Cudy TR3000 512MB ImmortalWrt 25.12.x
-
 on:
-  workflow_dispatch:  # 支持手动触发
+  workflow_dispatch:
   push:
     branches: [ main ]
+
+# 兼容GitHub官方Node20弃用过渡期规则，完全规避Node24权限报错问题
+env:
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     container:
-      # 官方 ImmortalWrt 25.12.x MediaTek Filogic ImageBuilder 镜像
+      # 官方ImmortalWrt 25.12.x MediaTek Filogic ImageBuilder镜像
       image: immortalwrt/imagebuilder:mediatek-filogic-openwrt-25.12.1
 
     steps:
       - name: 检出仓库代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: 赋予适配脚本执行权限
+      - name: 赋予全自动适配脚本执行权限
         run: chmod +x ./scripts/auto-adapt-tr3000.sh
 
-      - name: 执行全自动适配脚本
+      - name: 自动执行设备适配与Profile注册
         run: ./scripts/auto-adapt-tr3000.sh
 
-      - name: 开始构建固件
+      - name: 构建自定义固件
         run: |
           cd /home/build/immortalwrt
           make image PROFILE="cudy_tr3000-512mb-v1" \
             PACKAGES="curl luci luci-i18n-base-zh-cn luci-i18n-firewall-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-diskman-zh-cn luci-i18n-package-manager-zh-cn luci-i18n-ttyd-zh-cn openssh-sftp-server luci-i18n-filemanager-zh-cn" \
             ROOTFS_PARTSIZE="1024"
 
-      - name: 上传构建产物
+      - name: 上传固件构建产物
         uses: actions/upload-artifact@v4
         with:
           name: immortalwrt-tr3000-512mb-firmware
