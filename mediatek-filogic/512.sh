@@ -3,7 +3,6 @@
 # ==============================================================================
 # 脚本名称: fix_cudy_tr3000_512mb.sh
 # 功能描述: 为 ImmortalWrt/OpenWrt 源码添加 Cudy TR3000 512MB v1 支持
-#           重点修复 "No rule to make target ... kernel.bin" 编译错误
 # 适用版本: ImmortalWrt 23.05 / 24.10 / 25.12 (Mediatek Filogic 平台)
 # ==============================================================================
 
@@ -86,22 +85,19 @@ else
 # Added by fix_cudy_512mb.sh for Cudy TR3000 512MB v1
 # ---------------------------------------------------------
 define Device/${DEVICE_ID}
-  DEVICE_VENDOR := Cudy
-  DEVICE_MODEL := TR3000
-  DEVICE_VARIANT := v1 (512MB NAND)
-  DEVICE_DTS := ${DTS_NEW}
-  DEVICE_DTS_DIR := ../dts
-  SUPPORTED_DEVICES += cudy,tr3000-v1-512m
-  UBINIZE_OPTS := -E 5
-  BLOCKSIZE := 128k
-  PAGESIZE := 2048
-  IMAGE_SIZE := 507904k
-  KERNEL_IN_UBI := 1
-  # 【核心修复】显式定义 KERNEL 生成规则，解决 "No rule to make target ... kernel.bin" 错误
-  KERNEL := kernel-bin | lzma | uImage lzma
-  KERNEL_DEPENDS := \$(LINUX_DIR)/arch/\$(LINUX_KARCH)/boot/dts/\$(DEVICE_DTS).dtb
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-  DEVICE_PACKAGES := kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount
+  DEVICE_VENDOR := Cudy \
+  DEVICE_MODEL := TR3000 \
+  DEVICE_VARIANT := v1 (512MB NAND) \
+  DEVICE_DTS := mt7981b-cudy-tr3000-512mb-v1 \
+  DEVICE_DTS_DIR := ../dts \
+  SUPPORTED_DEVICES += R47-512MB \
+  UBINIZE_OPTS := -E 5 \
+  BLOCKSIZE := 128k \
+  PAGESIZE := 2048 \
+  IMAGE_SIZE := 507904k \
+  KERNEL_IN_UBI := 1 \
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata \
+  DEVICE_PACKAGES := kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount \
 endef
 TARGET_DEVICES += ${DEVICE_ID}
 EOF
@@ -109,19 +105,7 @@ EOF
 fi
 
 # --------------------------
-# 4. 清理构建缓存
-# --------------------------
-echo -e "${GREEN}>>> [步骤 3/3] 清理旧的内核构建缓存...${NC}"
-
-# 必须清理 build_dir 中的 linux 编译中间文件，否则 make 会认为内核已编译过而跳过
-# 这会导致新的 DTS 不生效，且 kernel.bin 不会重新生成
-rm -rf build_dir/target-aarch64*/linux-mediatek_filogic/
-rm -rf build_dir/target-arm*/linux-mediatek_filogic/
-
-echo -e "${GREEN}[OK] 缓存清理完毕${NC}"
-
-# --------------------------
-# 5. 完成提示
+# 4. 完成提示
 # --------------------------
 echo ""
 echo -e "${GREEN}========================================${NC}"
