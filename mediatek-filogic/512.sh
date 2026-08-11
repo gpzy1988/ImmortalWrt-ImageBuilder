@@ -1,136 +1,171 @@
 #!/bin/bash
 
 # ==============================================================================
-# 脚本名称: fix_cudy_tr3000_512mb.sh
-# 功能描述: 为 ImmortalWrt/OpenWrt 源码添加 Cudy TR3000 512MB v1 支持
-#           重点修复 "No rule to make target ... kernel.bin" 编译错误
-# 适用版本: ImmortalWrt 23.05 / 24.10 / 25.12 (Mediatek Filogic 平台)
+# ImmortalWrt ImageBuilder 专用修复脚本: 仅修正Cudy TR3000 512MB版内核编译缺失错误
+# 核心特性：全程不删除/覆盖用户原版.targetinfo文件，不改动原有其他设备配置
 # ==============================================================================
 
-set -e
+set -e # 遇到错误立即退出
 set -o pipefail
 
-# 颜色定义
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+echo ">>> [步骤 1/4] 环境与核心文件校验..."
 
-echo -e "${GREEN}>>> 开始配置 Cudy TR3000 512MB v1 编译环境...${NC}"
-
-# --------------------------
-# 1. 环境变量与路径检查
-# --------------------------
+# 定义全局变量
 BOARD="mediatek"
 SUBTARGET="filogic"
-DEVICE_ID="cudy_tr3000-512mb-v1"
+DEVICE_NAME="cudy_tr3000-512mb-v1"
 DTS_BASE="mt7981b-cudy-tr3000-v1"
-DTS_NEW="mt7981b-cudy_tr3000-512mb-v1"
+DTS_NEW="mt7981b-cudy-tr3000-512mb-v1"
 MK_FILE="target/linux/${BOARD}/image/${SUBTARGET}.mk"
 DTS_DIR="target/linux/${BOARD}/dts"
 
-# 检查是否在源码根目录
-if [ ! -f "Makefile" ] || [ ! -d "target/linux" ]; then
-    echo -e "${RED}[错误] 请在 OpenWrt/ImmortalWrt 源码根目录下运行此脚本！${NC}"
+# 校验原版设备树文件是否存在
+if [ ! -f "${DTS_DIR}/${DTS_BASE}.dts" ] || [ ! -f "${DTS_DIR}/${DTS_BASE}.dtsi" ]; then
+    echo "[!] 错误: 原始DTS设备树文件未在${DTS_DIR}目录下找到"
     exit 1
 fi
 
-# 检查基础文件是否存在
-if [ ! -f "${DTS_DIR}/${DTS_BASE}.dts" ]; then
-    echo -e "${RED}[错误] 未找到基础设备树文件: ${DTS_DIR}/${DTS_BASE}.dts${NC}"
-    echo -e "${YELLOW}提示: 请确保你的源码中已包含 Cudy TR3000 v1 的基础支持。${NC}"
+if [ ! -f "${MK_FILE}" ]; then
+    echo "[!] 错误: 平台镜像配置文件${MK_FILE}不存在"
     exit 1
 fi
 
-echo -e "${GREEN}[OK] 环境检查通过${NC}"
+echo "[+] 环境校验通过"
 
-# --------------------------
-# 2. 创建/更新设备树文件 (DTS)
-# --------------------------
-echo -e "${GREEN}>>> [步骤 1/3] 生成 512MB 专用设备树文件...${NC}"
+# ==============================================================================
+# 步骤 2: 生成并修改适配512MB NAND的设备树文件
+# ==============================================================================
+echo ">>> [步骤 2/4] 正在修改适配512MB容量的设备树配置..."
 
-# 复制并生成新的 DTS 文件
+# 1. 复制官方原版DTS文件生成扩容版专属文件
 cp "${DTS_DIR}/${DTS_BASE}.dts" "${DTS_DIR}/${DTS_NEW}.dts"
 cp "${DTS_DIR}/${DTS_BASE}.dtsi" "${DTS_DIR}/${DTS_NEW}.dtsi"
 
-# 修改 DTS 中的 include 引用，指向新的 dtsi
-sed -i "s|#include \"${DTS_BASE}.dtsi\"|#include \"${DTS_NEW}.dtsi\"|g" "${DTS_DIR}/${DTS_NEW}.dts"
-
-# 修改 DTSI 中的 Flash 分区大小
-# 原值通常为 0x4000000 (64MB) 或 0x8000000 (128MB)
-# 512MB NAND 可用空间约为 0x1FA40000 (需预留 OOB 和坏块管理空间，具体视 UBI 配置而定)
-# 这里我们将主要数据分区扩大以适配 512MB
-if grep -q "reg = <0x5c0000 0x" "${DTS_DIR}/${DTS_NEW}.dtsi"; then
-    # 注意：不同版本源码偏移量可能不同，此处针对常见 Filogic 布局进行替换
-    # 将原来的 size 替换为更大的值 (例如 0x1FA40000)
-    sed -i 's/reg = <0x5c0000 0x[0-9a-fA-F]*>;/reg = <0x5c0000 0x1FA40000>;/' "${DTS_DIR}/${DTS_NEW}.dtsi"
-    echo -e "${GREEN}[OK] 已更新 DTSI 中的 Flash 分区大小为 512MB 适配值${NC}"
+# 2. 默认开启USB供电：将GPIO输出状态从1改为0，适配该主板硬件电平逻辑
+if grep -q "gpio-export,output = <1>;" "${DTS_DIR}/${DTS_NEW}.dtsi"; then
+    sed -i 's/gpio-export,output = <1>;/gpio-export,output = <0>;/' "${DTS_DIR}/${DTS_NEW}.dtsi"
+    echo "[-] USB GPIO 供电已默认开启"
 else
-    echo -e "${YELLOW}[警告] 未在 DTSI 中找到标准的 reg 定义，请手动检查 ${DTS_DIR}/${DTS_NEW}.dtsi${NC}"
+    echo "[-] USB GPIO供电配置未找到或已提前配置，跳过该步骤"
 fi
 
-echo -e "${GREEN}[OK] 设备树文件生成完毕${NC}"
-
-# --------------------------
-# 3. 注入 Image 编译规则 (关键步骤)
-# --------------------------
-echo -e "${GREEN}>>> [步骤 2/3] 注入编译规则到 ${MK_FILE}...${NC}"
-
-# 检查是否已经存在该设备定义，避免重复注入
-if grep -q "define Device/${DEVICE_ID}" "${MK_FILE}"; then
-    echo -e "${YELLOW}[提示] 设备定义已存在，跳过注入步骤。${NC}"
+# 3. 更新.dts中的NAND总容量配置：原64MB（0x4000000）替换为适配512MB的0x1FA40000（预留系统空间后的实际可用容量）
+if grep -q "reg = <0x5c0000 0x4000000>;" "${DTS_DIR}/${DTS_NEW}.dts"; then
+    sed -i 's|reg = <0x5c0000 0x4000000>;|reg = <0x5c0000 0x1FA40000>;|' "${DTS_DIR}/${DTS_NEW}.dts"
+    echo "[-] 主DTS文件中的NAND容量已更新为512MB"
 else
-    cat >> "${MK_FILE}" <<EOF
+    echo "[!] 警告: 未在主DTS中找到原始NAND容量配置，请手动校验修改"
+fi
 
-# ---------------------------------------------------------
-# Added by fix_cudy_512mb.sh for Cudy TR3000 512MB v1
-# ---------------------------------------------------------
-define Device/${DEVICE_ID}
+# 4. 更新.dtsi中的UBI分区地址范围
+if grep -q "reg = <0x5c0000 0x4000000>;" "${DTS_DIR}/${DTS_NEW}.dtsi"; then
+    sed -i '/partition@5c0000 {/,/};/{\
+        s/reg = <0x5c0000 0x4000000>;/reg = <0x5c0000 0x1FA40000>;/\
+    }' "${DTS_DIR}/${DTS_NEW}.dtsi"
+    echo "[-] DTSI文件中的UBI分区大小已同步更新"
+else
+    echo "[!] 警告: 未在DTSI中找到原始UBI分区配置，请手动校验修改"
+fi
+
+# 5. 【关键修复】修正DTS头文件引用关联
+# 确保扩容版.dts文件引用的是新生成的同名.dtsi文件，而非原版旧版本
+if grep -q '#include "mt7981b-cudy-tr3000-v1.dtsi"' "${DTS_DIR}/${DTS_NEW}.dts"; then
+    sed -i 's|#include "mt7981b-cudy-tr3000-v1.dtsi"|#include "mt7981b-cudy-tr3000-512mb-v1.dtsi"|' "${DTS_DIR}/${DTS_NEW}.dts"
+    echo "[-] DTS头文件引用关联已修复"
+elif grep -q '#include "mt7981b-cudy-tr3000-512mb-v1.dtsi"' "${DTS_DIR}/${DTS_NEW}.dts"; then
+    echo "[-] DTS头文件引用关联已经正确，无需修改"
+else
+    echo "[!] 警告: 未在DTS文件中找到include引入语句，请手动添加正确的头文件路径"
+fi
+
+echo "[+] 所有设备树文件修改完成"
+
+# ==============================================================================
+# 步骤 3: 向filogic.mk注入带内核生成规则的新设备定义
+# ==============================================================================
+echo ">>> [步骤 3/4] 正在向配置文件 ${MK_FILE} 注入新设备编译规则..."
+
+if grep -q "define Device/${DEVICE_NAME}" "${MK_FILE}"; then
+    echo "[*] 设备定义已存在于 ${MK_FILE} 中，跳过注入步骤"
+else
+    echo "[-] 正在追加带完整内核生成规则的新设备定义..."
+    
+    # 【核心修复】新增KERNEL定义，彻底解决"No rule to make target ... kernel.bin"编译错误
+    cat >> "${MK_FILE}" << 'ENDOFMAKEFILE'
+
+define Device/cudy_tr3000-512mb-v1
   DEVICE_VENDOR := Cudy
   DEVICE_MODEL := TR3000
   DEVICE_VARIANT := v1 (512MB NAND)
-  DEVICE_DTS := ${DTS_NEW}
+  DEVICE_DTS := mt7981b-cudy-tr3000-512mb-v1
   DEVICE_DTS_DIR := ../dts
-  SUPPORTED_DEVICES += cudy,tr3000-v1-512m
+  SUPPORTED_DEVICES += R47-512MB
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   IMAGE_SIZE := 507904k
   KERNEL_IN_UBI := 1
-  # 【核心修复】显式定义 KERNEL 生成规则，解决 "No rule to make target ... kernel.bin" 错误
+  # 显式声明内核镜像生成流水线，确保kernel.bin能被正确构建
   KERNEL := kernel-bin | lzma | uImage lzma
-  KERNEL_DEPENDS := \$(LINUX_DIR)/arch/\$(LINUX_KARCH)/boot/dts/\$(DEVICE_DTS).dtb
+  KERNEL_DEPENDS := $(LINUX_DIR)/arch/$(LINUX_KARCH)/boot/dts/$(DEVICE_DTS).dtb
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   DEVICE_PACKAGES := kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount
 endef
-TARGET_DEVICES += ${DEVICE_ID}
-EOF
-    echo -e "${GREEN}[OK] 编译规则注入成功${NC}"
+TARGET_DEVICES += cudy_tr3000-512mb-v1
+ENDOFMAKEFILE
+
+    if grep -q "define Device/${DEVICE_NAME}" "${MK_FILE}"; then
+        echo "[+] 新设备定义注入成功"
+    else
+        echo "[!] 错误: 设备定义写入失败，请检查文件读写权限"
+        exit 1
+    fi
 fi
 
-# --------------------------
-# 4. 清理构建缓存
-# --------------------------
-echo -e "${GREEN}>>> [步骤 3/3] 清理旧的内核构建缓存...${NC}"
+# ==============================================================================
+# 步骤 4: 精准清理缓存，保留原版.targetinfo不改动
+# ==============================================================================
+echo ">>> [步骤 4/4] 仅清理无效缓存，保留你的原版.targetinfo文件..."
 
-# 必须清理 build_dir 中的 linux 编译中间文件，否则 make 会认为内核已编译过而跳过
-# 这会导致新的 DTS 不生效，且 kernel.bin 不会重新生成
-rm -rf build_dir/target-aarch64*/linux-mediatek_filogic/
-rm -rf build_dir/target-arm*/linux-mediatek_filogic/
+# 仅清理旧的tmp缓存目录，完全不触碰根目录下原有的.targetinfo文件
+rm -rf tmp/
+mkdir -p tmp
 
-echo -e "${GREEN}[OK] 缓存清理完毕${NC}"
+# 仅补充生成.profiles.mk设备配置文件（未删除原有文件，若已存在仅追加新设备条目）
+if ! grep -q "DEVICE_cudy_tr3000-512mb-v1" .profiles.mk 2>/dev/null; then
+    cat >> .profiles.mk << 'ENDOFPROFILES'
+PROFILE_NAMES += DEVICE_cudy_tr3000-512mb-v1
 
-# --------------------------
-# 5. 完成提示
-# --------------------------
+DEVICE_cudy_tr3000-512mb-v1_NAME := Cudy TR3000 v1 (512MB NAND)
+DEVICE_cudy_tr3000-512mb-v1_PACKAGES := kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount
+DEVICE_cudy_tr3000-512mb-v1_HAS_IMAGE_METADATA := 1
+DEVICE_cudy_tr3000-512mb-v1_SUPPORTED_DEVICES := R47-512MB
+DEVICE_cudy_tr3000-512mb-v1_FILESYSTEM := ubifs
+DEVICE_cudy_tr3000-512mb-v1_SIZE := 507904
+ENDOFPROFILES
+    echo "[+] 设备配置条目已补充写入.profiles.mk"
+else
+    echo "[-] 新设备条目已存在于.profiles.mk中，跳过写入"
+fi
+
+# 删除之前失败编译留下的无效内核缓存，强制Make重新生成缺失的kernel.bin文件
+rm -rf build_dir/target-aarch64_cortex-a53_musl/linux-mediatek_filogic/
+echo "[-] 旧内核编译目录清理完成"
+
+# ==============================================================================
+# 最终校验环节
+# ==============================================================================
 echo ""
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN} 配置完成！${NC}"
-echo -e "${GREEN}========================================${NC}"
-echo ""
-echo -e "接下来请执行以下命令开始编译："
-echo -e "${YELLOW}make menuconfig${NC}  (确保选中 Target: MediaTek Filogic, Device: Cudy TR3000 v1 (512MB NAND))"
-echo -e "${YELLOW}make -j\$(nproc)${NC}   (开始编译)"
-echo ""
-echo -e "如果仍然报错，请尝试先执行: ${YELLOW}make target/linux/clean${NC}"
-echo ""
+echo ">>> 内核错误修复流程全部执行完毕！"
+echo ">>> 正在校验新设备配置是否可用..."
+
+if grep -q "cudy_tr3000-512mb-v1" .profiles.mk; then
+    echo "[成功] 设备配置 'cudy_tr3000-512mb-v1' 已准备就绪，你的原版.targetinfo文件未被任何修改。"
+    echo ""
+    echo "后续操作指引："
+    echo "1. 执行 'make info' 确认新设备已出现在可用设备列表中"
+    echo "2. 执行 'make image PROFILE=cudy_tr3000-512mb-v1 FILES=files' 启动固件编译"
+else
+    echo "[失败] 设备注册校验未通过，请手动检查 .profiles.mk 文件内容"
+    exit 1
+fi
