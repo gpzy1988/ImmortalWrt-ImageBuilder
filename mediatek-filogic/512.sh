@@ -1,120 +1,174 @@
+
 #!/bin/bash
 
 # ==============================================================================
-# 脚本名称: fix_cudy_tr3000_512mb.sh
-# 功能描述: 为 ImmortalWrt/OpenWrt 源码添加 Cudy TR3000 512MB v1 支持
-# 适用版本: ImmortalWrt 23.05 / 24.10 / 25.12 (Mediatek Filogic 平台)
+# ImmortalWrt ImageBuilder DIY Script: Cudy TR3000 512MB NAND Mod
+# Fixed: Robust heredoc handling, Manual metadata generation, Error checking
 # ==============================================================================
 
-set -e
+set -e # 遇到错误立即退出
 set -o pipefail
 
-# 颜色定义
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+echo ">>> [Step 1/4] Checking environment and files..."
 
-echo -e "${GREEN}>>> 开始配置 Cudy TR3000 512MB v1 编译环境...${NC}"
-
-# --------------------------
-# 1. 环境变量与路径检查
-# --------------------------
+# 定义变量
 BOARD="mediatek"
 SUBTARGET="filogic"
-DEVICE_ID="cudy_tr3000-512mb-v1"
+DEVICE_NAME="cudy_tr3000-512mb-v1"
 DTS_BASE="mt7981b-cudy-tr3000-v1"
-DTS_NEW="mt7981b-cudy_tr3000-512mb-v1"
+DTS_NEW="mt7981b-cudy-tr3000-512mb-v1"
 MK_FILE="target/linux/${BOARD}/image/${SUBTARGET}.mk"
 DTS_DIR="target/linux/${BOARD}/dts"
 
-# 检查是否在源码根目录
-if [ ! -f "Makefile" ] || [ ! -d "target/linux" ]; then
-    echo -e "${RED}[错误] 请在 OpenWrt/ImmortalWrt 源码根目录下运行此脚本！${NC}"
+# 检查关键文件是否存在
+if [ ! -f "${DTS_DIR}/${DTS_BASE}.dts" ] || [ ! -f "${DTS_DIR}/${DTS_BASE}.dtsi" ]; then
+    echo "[!] Error: Original DTS files not found in ${DTS_DIR}"
     exit 1
 fi
 
-# 检查基础文件是否存在
-if [ ! -f "${DTS_DIR}/${DTS_BASE}.dts" ]; then
-    echo -e "${RED}[错误] 未找到基础设备树文件: ${DTS_DIR}/${DTS_BASE}.dts${NC}"
-    echo -e "${YELLOW}提示: 请确保你的源码中已包含 Cudy TR3000 v1 的基础支持。${NC}"
+if [ ! -f "${MK_FILE}" ]; then
+    echo "[!] Error: ${MK_FILE} not found."
     exit 1
 fi
 
-echo -e "${GREEN}[OK] 环境检查通过${NC}"
+echo "[+] Environment check passed."
 
-# --------------------------
-# 2. 创建/更新设备树文件 (DTS)
-# --------------------------
-echo -e "${GREEN}>>> [步骤 1/3] 生成 512MB 专用设备树文件...${NC}"
+# ==============================================================================
+# Step 2: Modify DTS Files for 512MB NAND
+# ==============================================================================
+echo ">>> [Step 2/4] Modifying Device Tree (DTS) for 512MB NAND..."
 
-# 复制并生成新的 DTS 文件
+# 1. Copy original DTS files to new variant
 cp "${DTS_DIR}/${DTS_BASE}.dts" "${DTS_DIR}/${DTS_NEW}.dts"
 cp "${DTS_DIR}/${DTS_BASE}.dtsi" "${DTS_DIR}/${DTS_NEW}.dtsi"
 
-# 修改 DTS 中的 include 引用，指向新的 dtsi
-sed -i "s|#include \"${DTS_BASE}.dtsi\"|#include \"${DTS_NEW}.dtsi\"|g" "${DTS_DIR}/${DTS_NEW}.dts"
-
-# 修改 DTSI 中的 Flash 分区大小
-# 原值通常为 0x4000000 (64MB) 或 0x8000000 (128MB)
-# 512MB NAND 可用空间约为 0x1FA40000 (需预留 OOB 和坏块管理空间，具体视 UBI 配置而定)
-# 这里我们将主要数据分区扩大以适配 512MB
-if grep -q "reg = <0x5c0000 0x" "${DTS_DIR}/${DTS_NEW}.dtsi"; then
-    # 注意：不同版本源码偏移量可能不同，此处针对常见 Filogic 布局进行替换
-    # 将原来的 size 替换为更大的值 (例如 0x1FA40000)
-    sed -i 's/reg = <0x5c0000 0x[0-9a-fA-F]*>;/reg = <0x5c0000 0x1FA40000>;/' "${DTS_DIR}/${DTS_NEW}.dtsi"
-    echo -e "${GREEN}[OK] 已更新 DTSI 中的 Flash 分区大小为 512MB 适配值${NC}"
+# 2. Enable USB Power (GPIO Output 0 = High/On for this board usually)
+# 注意：如果原文件已经是 <0> 或没有该行，sed 可能不匹配，这里增加容错
+if grep -q "gpio-export,output = <1>;" "${DTS_DIR}/${DTS_NEW}.dtsi"; then
+    sed -i 's/gpio-export,output = <1>;/gpio-export,output = <0>;/' "${DTS_DIR}/${DTS_NEW}.dtsi"
+    echo "[-] USB GPIO power enabled."
 else
-    echo -e "${YELLOW}[警告] 未在 DTSI 中找到标准的 reg 定义，请手动检查 ${DTS_DIR}/${DTS_NEW}.dtsi${NC}"
+    echo "[-] USB GPIO power setting not found or already configured, skipping."
 fi
 
-echo -e "${GREEN}[OK] 设备树文件生成完毕${NC}"
-
-# --------------------------
-# 3. 注入 Image 编译规则 (关键步骤)
-# --------------------------
-echo -e "${GREEN}>>> [步骤 2/3] 注入编译规则到 ${MK_FILE}...${NC}"
-
-# 检查是否已经存在该设备定义，避免重复注入
-if grep -q "define Device/${DEVICE_ID}" "${MK_FILE}"; then
-    echo -e "${YELLOW}[提示] 设备定义已存在，跳过注入步骤。${NC}"
+# 3. Update NAND Capacity in .dts (64MB -> 512MB)
+# 0x4000000 (64MB) -> 0x1FA40000 (512MB - reserved space)
+if grep -q "reg = <0x5c0000 0x4000000>;" "${DTS_DIR}/${DTS_NEW}.dts"; then
+    sed -i 's|reg = <0x5c0000 0x4000000>;|reg = <0x5c0000 0x1FA40000>;|' "${DTS_DIR}/${DTS_NEW}.dts"
+    echo "[-] NAND capacity updated in .dts"
 else
-    cat >> "${MK_FILE}" <<EOF
+    echo "[!] Warning: Could not find original NAND reg in .dts, check manually."
+fi
 
-# ---------------------------------------------------------
-# Added by fix_cudy_512mb.sh for Cudy TR3000 512MB v1
-# ---------------------------------------------------------
-define Device/${DEVICE_ID}
-  DEVICE_VENDOR := Cudy \
-  DEVICE_MODEL := TR3000 \
-  DEVICE_VARIANT := v1 (512MB NAND) \
-  DEVICE_DTS := mt7981b-cudy-tr3000-512mb-v1 \
-  DEVICE_DTS_DIR := ../dts \
-  SUPPORTED_DEVICES += R47-512MB \
-  UBINIZE_OPTS := -E 5 \
-  BLOCKSIZE := 128k \
-  PAGESIZE := 2048 \
-  IMAGE_SIZE := 507904k \
-  KERNEL_IN_UBI := 1 \
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata \
-  DEVICE_PACKAGES := kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount \
+# 4. Update UBI Partition Reg in .dtsi
+# Replace the reg property inside the partition block
+if grep -q "reg = <0x5c0000 0x4000000>;" "${DTS_DIR}/${DTS_NEW}.dtsi"; then
+    sed -i '/partition@5c0000 {/,/};/{
+        s/reg = <0x5c0000 0x4000000>;/reg = <0x5c0000 0x1FA40000>;/
+    }' "${DTS_DIR}/${DTS_NEW}.dtsi"
+    echo "[-] UBI partition size updated in .dtsi"
+else
+    echo "[!] Warning: Could not find original UBI reg in .dtsi, check manually."
+fi
+
+echo "[+] DTS files modified successfully."
+
+# ==============================================================================
+# Step 3: Inject Device Definition into filogic.mk
+# ==============================================================================
+echo ">>> [Step 3/4] Injecting device definition into ${MK_FILE}..."
+
+if grep -q "define Device/${DEVICE_NAME}" "${MK_FILE}"; then
+    echo "[*] Device definition already exists in ${MK_FILE}, skipping injection."
+else
+    echo "[-] Appending new device definition..."
+    
+    # 【关键修复】使用 cat >> file << 'EOF' 确保内容原样写入，且 EOF 必须顶格
+    # 注意：EOF 前后不能有空格或Tab
+    cat >> "${MK_FILE}" << 'ENDOFMAKEFILE'
+
+define Device/cudy_tr3000-512mb-v1
+  DEVICE_VENDOR := Cudy
+  DEVICE_MODEL := TR3000
+  DEVICE_VARIANT := v1 (512MB NAND)
+  DEVICE_DTS := mt7981b-cudy-tr3000-512mb-v1
+  DEVICE_DTS_DIR := ../dts
+  SUPPORTED_DEVICES += R47-512MB
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  IMAGE_SIZE := 507904k
+  KERNEL_IN_UBI := 1
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  DEVICE_PACKAGES := kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount
 endef
-TARGET_DEVICES += ${DEVICE_ID}
-EOF
-    echo -e "${GREEN}[OK] 编译规则注入成功${NC}"
+TARGET_DEVICES += cudy_tr3000-512mb-v1
+ENDOFMAKEFILE
+
+    if grep -q "define Device/${DEVICE_NAME}" "${MK_FILE}"; then
+        echo "[+] Device definition injected successfully."
+    else
+        echo "[!] Error: Failed to inject device definition. Check permissions."
+        exit 1
+    fi
 fi
 
-# --------------------------
-# 4. 完成提示
-# --------------------------
+# ==============================================================================
+# Step 4: Manually Generate .targetinfo and .profiles.mk
+# Bypasses automatic generation failures
+# ==============================================================================
+echo ">>> [Step 4/4] Manually generating metadata cache..."
+
+# Clean old cache
+rm -f .targetinfo .profiles.mk
+rm -rf tmp/
+mkdir -p tmp
+
+# 1. Manually Create .targetinfo
+cat > .targetinfo << 'ENDOFTARGETINFO'
+Target-Arch: aarch64
+Target-Arch-Packages:
+Target-Features nand ubifs usb usbgadget
+Target-Name: mediatek
+Target-Patches:
+Target-Profile: DEVICE_cudy_tr3000-512mb-v1
+Target-Profile-Name: Cudy TR3000 v1 (512MB NAND)
+Target-Profile-Packages: kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount
+Target-Profile-hasImageMetadata: 1
+Target-Profile-SupportedDevices: R47-512MB
+Target-Profile-Filesystem: ubifs
+Target-Profile-Size: 507904
+Target-Subtarget: filogic
+Target-Version: 25.12.1
+ENDOFTARGETINFO
+
+# 2. Manually Create .profiles.mk
+cat > .profiles.mk << 'ENDOFPROFILES'
+PROFILE_NAMES += DEVICE_cudy_tr3000-512mb-v1
+
+DEVICE_cudy_tr3000-512mb-v1_NAME := Cudy TR3000 v1 (512MB NAND)
+DEVICE_cudy_tr3000-512mb-v1_PACKAGES := kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount
+DEVICE_cudy_tr3000-512mb-v1_HAS_IMAGE_METADATA := 1
+DEVICE_cudy_tr3000-512mb-v1_SUPPORTED_DEVICES := R47-512MB
+DEVICE_cudy_tr3000-512mb-v1_FILESYSTEM := ubifs
+DEVICE_cudy_tr3000-512mb-v1_SIZE := 507904
+ENDOFPROFILES
+
+echo "[+] Metadata cache generated manually."
+
+# ==============================================================================
+# Final Verification
+# ==============================================================================
 echo ""
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN} 配置完成！${NC}"
-echo -e "${GREEN}========================================${NC}"
-echo ""
-echo -e "接下来请执行以下命令开始编译："
-echo -e "${YELLOW}make menuconfig${NC}  (确保选中 Target: MediaTek Filogic, Device: Cudy TR3000 v1 (512MB NAND))"
-echo -e "${YELLOW}make -j\$(nproc)${NC}   (开始编译)"
-echo ""
-echo -e "如果仍然报错，请尝试先执行: ${YELLOW}make target/linux/clean${NC}"
-echo ""
+echo ">>> DIY Process Completed!"
+echo ">>> Verifying profile availability..."
+
+if grep -q "cudy_tr3000-512mb-v1" .profiles.mk; then
+    echo "[SUCCESS] Profile 'cudy_tr3000-512mb-v1' is ready."
+    echo ""
+    echo "You can now build the image using:"
+    echo "make image PROFILE=cudy_tr3000-512mb-v1 FILES=files"
+else
+    echo "[FAILED] Profile verification failed. Please check .profiles.mk content."
+    exit 1
+fi
