@@ -1,9 +1,8 @@
-
 #!/bin/bash
 
 # ==============================================================================
 # ImmortalWrt ImageBuilder DIY Script: Cudy TR3000 512MB NAND Mod
-# Fixed: Robust heredoc handling, Manual metadata generation, Error checking
+# 直接借用原版 cudy_tr3000-v1 内核，避免重新编译
 # ==============================================================================
 
 set -e # 遇到错误立即退出
@@ -15,6 +14,7 @@ echo ">>> [Step 1/4] Checking environment and files..."
 BOARD="mediatek"
 SUBTARGET="filogic"
 DEVICE_NAME="cudy_tr3000-512mb-v1"
+DEVICE_BASE="cudy_tr3000-v1"  # 原版128MB设备名
 DTS_BASE="mt7981b-cudy-tr3000-v1"
 DTS_NEW="mt7981b-cudy-tr3000-512mb-v1"
 MK_FILE="target/linux/${BOARD}/image/${SUBTARGET}.mk"
@@ -43,7 +43,6 @@ cp "${DTS_DIR}/${DTS_BASE}.dts" "${DTS_DIR}/${DTS_NEW}.dts"
 cp "${DTS_DIR}/${DTS_BASE}.dtsi" "${DTS_DIR}/${DTS_NEW}.dtsi"
 
 # 2. Enable USB Power (GPIO Output 0 = High/On for this board usually)
-# 注意：如果原文件已经是 <0> 或没有该行，sed 可能不匹配，这里增加容错
 if grep -q "gpio-export,output = <1>;" "${DTS_DIR}/${DTS_NEW}.dtsi"; then
     sed -i 's/gpio-export,output = <1>;/gpio-export,output = <0>;/' "${DTS_DIR}/${DTS_NEW}.dtsi"
     echo "[-] USB GPIO power enabled."
@@ -71,20 +70,29 @@ else
     echo "[!] Warning: Could not find original UBI reg in .dtsi, check manually."
 fi
 
+# 5. 【关键修复】修正DTS头文件引用关联
+if grep -q '#include "mt7981b-cudy-tr3000-v1.dtsi"' "${DTS_DIR}/${DTS_NEW}.dts"; then
+    sed -i 's|#include "mt7981b-cudy-tr3000-v1.dtsi"|#include "mt7981b-cudy-tr3000-512mb-v1.dtsi"|' "${DTS_DIR}/${DTS_NEW}.dts"
+    echo "[-] DTS include reference fixed."
+elif grep -q '#include "mt7981b-cudy-tr3000-512mb-v1.dtsi"' "${DTS_DIR}/${DTS_NEW}.dts"; then
+    echo "[-] DTS include reference already correct."
+else
+    echo "[!] Warning: Could not find include statement in .dts file."
+fi
+
 echo "[+] DTS files modified successfully."
 
 # ==============================================================================
 # Step 3: Inject Device Definition into filogic.mk
+# 【关键】直接借用原版内核，不生成新的内核文件
 # ==============================================================================
 echo ">>> [Step 3/4] Injecting device definition into ${MK_FILE}..."
 
 if grep -q "define Device/${DEVICE_NAME}" "${MK_FILE}"; then
     echo "[*] Device definition already exists in ${MK_FILE}, skipping injection."
 else
-    echo "[-] Appending new device definition..."
+    echo "[-] Appending new device definition, borrowing original kernel..."
     
-    # 【关键修复】使用 cat >> file << 'EOF' 确保内容原样写入，且 EOF 必须顶格
-    # 注意：EOF 前后不能有空格或Tab
     cat >> "${MK_FILE}" << 'ENDOFMAKEFILE'
 
 define Device/cudy_tr3000-512mb-v1
@@ -99,6 +107,10 @@ define Device/cudy_tr3000-512mb-v1
   PAGESIZE := 2048
   IMAGE_SIZE := 507904k
   KERNEL_IN_UBI := 1
+  # 【关键修复】直接使用原版内核，不生成新的设备特定内核文件
+  KERNEL := kernel-bin | lzma | uImage lzma
+  KERNEL_LOADADDR := 0x44000000
+  KERNEL_INITRAMFS := kernel-bin | gzip | uImage gzip
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   DEVICE_PACKAGES := kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount
 endef
@@ -106,7 +118,7 @@ TARGET_DEVICES += cudy_tr3000-512mb-v1
 ENDOFMAKEFILE
 
     if grep -q "define Device/${DEVICE_NAME}" "${MK_FILE}"; then
-        echo "[+] Device definition injected successfully."
+        echo "[+] Device definition injected successfully, using original kernel."
     else
         echo "[!] Error: Failed to inject device definition. Check permissions."
         exit 1
@@ -115,7 +127,6 @@ fi
 
 # ==============================================================================
 # Step 4: Manually Generate .targetinfo and .profiles.mk
-# Bypasses automatic generation failures
 # ==============================================================================
 echo ">>> [Step 4/4] Manually generating metadata cache..."
 
@@ -157,6 +168,38 @@ ENDOFPROFILES
 echo "[+] Metadata cache generated manually."
 
 # ==============================================================================
+# Step 5: Ensure kernel files are accessible
+# ==============================================================================
+echo ">>> [Step 5/5] Ensuring kernel files accessibility..."
+
+# 检查是否有原版设备的内核文件
+if [ -d "build_dir/target-aarch64_cortex-a53_musl" ]; then
+    ORIGINAL_KERNEL=$(find build_dir/target-aarch64_cortex-a53_musl -name "*${DEVICE_BASE}*kernel*" -type f 2>/dev/null | head -1)
+    if [ -n "$ORIGINAL_KERNEL" ]; then
+        echo "[-] Found original kernel: $(basename $ORIGINAL_KERNEL)"
+        
+        # 创建内核文件链接，确保512MB版本能找到内核
+        KERNEL_BASE_DIR="build_dir/target-aarch64_cortex-a53_musl/linux-mediatek_filogic"
+        mkdir -p "$KERNEL_BASE_DIR"
+        
+        # 如果原版内核存在，创建软链接
+        if [ -f "$ORIGINAL_KERNEL" ]; then
+            # 提取内核文件扩展名
+            KERNEL_EXT="${ORIGINAL_KERNEL##*.}"
+            LINK_NAME="${KERNEL_BASE_DIR}/${DEVICE_NAME}-kernel.${KERNEL_EXT}"
+            
+            if [ ! -L "$LINK_NAME" ]; then
+                ln -sf "$ORIGINAL_KERNEL" "$LINK_NAME" 2>/dev/null || echo "[!] Could not create symlink"
+            fi
+        fi
+    else
+        echo "[-] Original kernel not found yet, ImageBuilder will generate during build."
+    fi
+fi
+
+echo "[-] Kernel accessibility setup completed."
+
+# ==============================================================================
 # Final Verification
 # ==============================================================================
 echo ""
@@ -165,6 +208,12 @@ echo ">>> Verifying profile availability..."
 
 if grep -q "cudy_tr3000-512mb-v1" .profiles.mk; then
     echo "[SUCCESS] Profile 'cudy_tr3000-512mb-v1' is ready."
+    echo ""
+    echo "Configuration Summary:"
+    echo "  - Device: Cudy TR3000 v1 (512MB NAND)"
+    echo "  - Kernel: Using original cudy_tr3000-v1 kernel"
+    echo "  - DTS: Modified for 512MB NAND support"
+    echo "  - Build: No kernel recompilation required"
     echo ""
     echo "You can now build the image using:"
     echo "make image PROFILE=cudy_tr3000-512mb-v1 FILES=files"
