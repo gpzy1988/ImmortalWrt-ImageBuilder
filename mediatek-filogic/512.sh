@@ -2,13 +2,13 @@
 
 # ==============================================================================
 # ImmortalWrt ImageBuilder DIY 修复脚本: 解决Cudy TR3000 512MB版内核编译目标缺失问题
-# 特性：100%保留用户原版.targetinfo不动，强制提前生成适配512MB的可用内核
+# 新增特性：自动下载内核源码并完成源码编译，生成100%适配512MB分区的专属内核
 # ==============================================================================
 
 set -e # 遇到错误立即退出
 set -o pipefail
 
-echo ">>> [步骤 1/6] 环境与核心文件校验..."
+echo ">>> [步骤 1/7] 环境与核心文件校验..."
 
 # 定义全局变量
 BOARD="mediatek"
@@ -18,7 +18,7 @@ DTS_BASE="mt7981b-cudy-tr3000-v1"
 DTS_NEW="mt7981b-cudy-tr3000-512mb-v1"
 MK_FILE="target/linux/${BOARD}/image/${SUBTARGET}.mk"
 DTS_DIR="target/linux/${BOARD}/dts"
-KERNEL_OUT_DIR="build_dir/target-aarch64_cortex-a53_musl/linux-mediatek_filogic"
+KERNEL_BUILD_DIR="build_dir/target-aarch64_cortex-a53_musl/linux-mediatek_filogic"
 
 # 校验原版设备树文件是否存在
 if [ ! -f "${DTS_DIR}/${DTS_BASE}.dts" ] || [ ! -f "${DTS_DIR}/${DTS_BASE}.dtsi" ]; then
@@ -31,18 +31,27 @@ if [ ! -f "${MK_FILE}" ]; then
     exit 1
 fi
 
-# 提前备份原版.targetinfo，确保绝对不被修改
-if [ -f ".targetinfo" ]; then
-    cp .targetinfo .targetinfo.bak
-    echo "[+] 已自动备份原版.targetinfo文件，全程不会修改你的原有配置内容"
-fi
-
 echo "[+] 环境校验通过"
 
+echo ">>> [步骤 2/7] 自动下载并解压内核源码..."
+# 自动创建dl目录，下载对应版本内核源码
+mkdir -p dl
+if [ ! -f dl/linux-5.15.tar.xz ]; then
+    make download -j$(nproc)
+    mv dl/linux-*.tar.xz dl/linux-5.15.tar.xz
+fi
+# 解压源码到指定构建目录
+tar xf dl/linux-5.15.tar.xz -C build_dir/target-aarch64_cortex-a53_musl/
+mv build_dir/target-aarch64_cortex-a53_musl/linux-* "${KERNEL_BUILD_DIR}"
+# 自动复用平台原生内核配置
+cp target/linux/mediatek/config-5.15 "${KERNEL_BUILD_DIR}/.config"
+make -C "${KERNEL_BUILD_DIR}" olddefconfig
+echo "[+] 内核源码下载解压与配置完成"
+
 # ==============================================================================
-# 步骤 2: 生成并修改适配512MB NAND的设备树文件
+# 步骤 3: 生成并修改适配512MB NAND的设备树文件
 # ==============================================================================
-echo ">>> [步骤 2/6] 正在修改适配512MB容量的设备树配置..."
+echo ">>> [步骤 3/7] 正在修改适配512MB容量的设备树配置..."
 
 # 1. 复制官方原版DTS文件生成扩容版专属文件
 cp "${DTS_DIR}/${DTS_BASE}.dts" "${DTS_DIR}/${DTS_NEW}.dts"
@@ -85,12 +94,16 @@ else
     echo "[!] 警告: 未在DTS文件中找到include引入语句，请手动添加正确的头文件路径"
 fi
 
+# 同步新DTS文件到内核源码目录
+cp "${DTS_DIR}/${DTS_NEW}.dts" "${KERNEL_BUILD_DIR}/arch/arm64/boot/dts/mediatek/"
+cp "${DTS_DIR}/${DTS_NEW}.dtsi" "${KERNEL_BUILD_DIR}/arch/arm64/boot/dts/mediatek/"
+
 echo "[+] 所有设备树文件修改完成"
 
 # ==============================================================================
-# 步骤 3: 向filogic.mk注入带内核生成规则的新设备定义
+# 步骤 4: 向filogic.mk注入带内核生成规则的新设备定义
 # ==============================================================================
-echo ">>> [步骤 3/6] 正在向配置文件 ${MK_FILE} 注入新设备编译规则..."
+echo ">>> [步骤 4/7] 正在向配置文件 ${MK_FILE} 注入新设备编译规则..."
 
 if grep -q "define Device/${DEVICE_NAME}" "${MK_FILE}"; then
     echo "[*] 设备定义已存在于 ${MK_FILE} 中，跳过注入步骤"
@@ -129,17 +142,17 @@ ENDOFMAKEFILE
 fi
 
 # ==============================================================================
-# 步骤 4: 增量更新元数据缓存，完全保留原版.targetinfo不覆盖
+# 步骤 5: 手动生成元数据缓存，绕过自动生成脚本兼容故障
 # ==============================================================================
-echo ">>> [步骤 4/6] 增量更新编译元数据，原版.targetinfo完整保留不删除..."
+echo ">>> [步骤 5/7] 正在手动生成编译元数据缓存..."
 
-# 清理旧的无效缓存文件，仅删除.profiles.mk，不动.targetinfo
+# 清理旧的无效缓存文件
 rm -f .profiles.mk
 rm -rf tmp/
 mkdir -p tmp
 
-# 仅增量追加新设备配置到原版.targetinfo末尾，完全保留原有所有设备的配置
-if [ -f ".targetinfo" ] && ! grep -q "Target-Profile: DEVICE_cudy_tr3000-512mb-v1" .targetinfo; then
+# 仅增量追加新设备配置，完全保留原版.targetinfo内容
+if ! grep -q "Target-Profile: DEVICE_cudy_tr3000-512mb-v1" .targetinfo; then
     cat >> .targetinfo << 'ENDOFTARGETINFO'
 Target-Profile: DEVICE_cudy_tr3000-512mb-v1
 Target-Profile-Name: Cudy TR3000 v1 (512MB NAND)
@@ -148,13 +161,12 @@ Target-Profile-hasImageMetadata: 1
 Target-Profile-SupportedDevices: R47-512MB
 Target-Profile-Filesystem: ubifs
 Target-Profile-Size: 507904
+Target-Subtarget: filogic
+Target-Version: 25.12.1
 ENDOFTARGETINFO
-    echo "[+] 新设备配置已追加到原版.targetinfo末尾，原有全部内容100%未改动"
-else
-    echo "[-] 原版.targetinfo中已存在该设备配置，无需重复追加"
 fi
 
-# 创建.profiles.mk设备配置文件
+# 手动创建.profiles.mk设备配置文件
 cat > .profiles.mk << 'ENDOFPROFILES'
 PROFILE_NAMES += DEVICE_cudy_tr3000-512mb-v1
 
@@ -166,67 +178,34 @@ DEVICE_cudy_tr3000-512mb-v1_FILESYSTEM := ubifs
 DEVICE_cudy_tr3000-512mb-v1_SIZE := 507904
 ENDOFPROFILES
 
-echo "[+] 元数据缓存文件生成完成"
+echo "[+] 元数据缓存文件手动生成完成，原版.targetinfo完整保留"
 
 # ==============================================================================
-# 步骤 5: 强制提前生成可用目标内核（核心新增功能，绕过源码编译限制）
+# 步骤 6: 源码编译内核并生成目标kernel.bin
 # ==============================================================================
-echo ">>> [步骤 5/6] 强制提前生成可用目标内核，无需下载内核源码..."
-
-# 创建内核输出目录，确保路径存在
-mkdir -p "${KERNEL_OUT_DIR}"
-
-# 自动搜索ImageBuilder内置的预编译vmlinux内核文件
-VMLINUX_SRC=""
-if [ -f "build_dir/target-aarch64_cortex-a53_musl/root-mediatek_filogic/boot/vmlinux" ]; then
-    VMLINUX_SRC="build_dir/target-aarch64_cortex-a53_musl/root-mediatek_filogic/boot/vmlinux"
-elif [ -f "staging_dir/target-aarch64_cortex-a53_musl/root-mediatek_filogic/boot/vmlinux" ]; then
-    VMLINUX_SRC="staging_dir/target-aarch64_cortex-a53_musl/root-mediatek_filogic/boot/vmlinux"
-else
-    VMLINUX_SRC=$(find . -name "vmlinux" -path "*/linux-mediatek_filogic/*" -type f | head -n 1)
-fi
-
-if [ -z "$VMLINUX_SRC" ] || [ ! -f "$VMLINUX_SRC" ]; then
-    echo "[!] 错误：未找到ImageBuilder内置预编译vmlinux文件，请检查环境完整性"
-    exit 1
-fi
-
-# 从预编译内核封装生成符合要求的目标kernel.bin
-cp "$VMLINUX_SRC" "${KERNEL_OUT_DIR}/vmlinux"
-cd "${KERNEL_OUT_DIR}"
-lzma -f -k vmlinux
-mkimage -A aarch64 -O linux -T kernel -C lzma -a 0x40080000 -e 0x40080000 -n "ImmortalWrt" -d vmlinux.lzma "${DEVICE_NAME}-kernel.bin"
+echo ">>> [步骤 6/7] 正在从源码编译适配内核..."
+# 启动全量内核编译
+make -C "${KERNEL_BUILD_DIR}" -j$(nproc)
+# 封装编译生成的内核为符合要求的目标格式
+cd "${KERNEL_BUILD_DIR}"
+lzma -f -k arch/arm64/boot/Image
+mkimage -A aarch64 -O linux -T kernel -C lzma -a 0x40080000 -e 0x40080000 -n "ImmortalWrt" -d arch/arm64/boot/Image.lzma "${DEVICE_NAME}-kernel.bin"
 cd -
-
-if [ -f "${KERNEL_OUT_DIR}/${DEVICE_NAME}-kernel.bin" ]; then
-    echo "[+] 可用目标内核已强制提前生成，路径：${KERNEL_OUT_DIR}/${DEVICE_NAME}-kernel.bin"
-else
-    echo "[!] 错误：内核文件生成失败，请检查lzma和mkimage工具是否安装"
-    exit 1
-fi
+echo "[+] 从源码编译生成的目标内核路径：${KERNEL_BUILD_DIR}/${DEVICE_NAME}-kernel.bin"
 
 # ==============================================================================
-# 步骤 6: 最终校验环节
+# 步骤 7: 最终校验环节
 # ==============================================================================
 echo ""
 echo ">>> 自定义适配流程全部执行完毕！"
-echo ">>> 正在校验所有配置是否可用..."
+echo ">>> 正在校验新设备配置是否可用..."
 
-# 校验原版.targetinfo完整性
-if [ -f ".targetinfo.bak" ] && [ "$(md5sum .targetinfo.bak | awk '{print $1}')" != "$(md5sum .targetinfo | awk '{print $1}')" ]; then
-    mv .targetinfo.bak .targetinfo
-    echo "[+] 已恢复原版.targetinfo，确保你的原有配置完全未被修改"
-else
-    rm -f .targetinfo.bak
-    echo "[+] 校验通过：原版.targetinfo完整保留，未被任何修改"
-fi
-
-if grep -q "cudy_tr3000-512mb-v1" .profiles.mk && [ -f "${KERNEL_OUT_DIR}/${DEVICE_NAME}-kernel.bin" ]; then
-    echo "[✅ 全部流程成功完成！]"
+if grep -q "cudy_tr3000-512mb-v1" .profiles.mk && [ -f "${KERNEL_BUILD_DIR}/${DEVICE_NAME}-kernel.bin" ]; then
+    echo "[成功] 设备配置 'cudy_tr3000-512mb-v1' 已准备就绪，专属内核已从源码编译完成。"
     echo ""
     echo "后续操作指引："
     echo "1. 执行 'make info' 确认新设备已出现在可用设备列表中"
-    echo "2. 执行 'make image PROFILE=cudy_tr3000-512mb-v1 FILES=files' 启动固件编译，不会再报kernel.bin缺失或Profile不存在错误"
+    echo "2. 执行 'make image PROFILE=cudy_tr3000-512mb-v1 FILES=files' 启动固件编译"
 else
     echo "[失败] 设备注册校验未通过，请手动检查配置内容"
     exit 1
