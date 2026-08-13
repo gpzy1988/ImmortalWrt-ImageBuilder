@@ -244,16 +244,13 @@ if grep -q "cudy_tr3000-512mb-v1" .profiles.mk; then
     echo ""
     echo "配置摘要："
     echo "  - 设备: Cudy TR3000 v1 (512MB NAND)"
-    echo "  - 内核: 直接复制原版 cudy_tr3000-v1 内核文件"
+    echo "  - 内核: 直接复制 cudy_tr3000-v1 内核文件"
     echo "  - DTS: 已修改支持 512MB NAND"
     echo "  - 编译: 跳过内核编译，直接使用原版内核"
     echo ""
     
-    if [ -f "${KERNEL_BASE_DIR}/${DEVICE_NAME}-kernel.bin" ]; then
-        echo "✓ 内核文件已准备: $(ls -lh ${KERNEL_BASE_DIR}/${DEVICE_NAME}-kernel.bin)"
-    else
-        echo "⚠ 内核文件将在编译时生成"
-    fi
+    cp -rf ${{ github.workspace }}/mediatek-filogic/cudy_tr3000-512mb-v1-kernel.bin /home/build/immortalwrt/bin/targets/mediatek/filogic/immortalwrt-imagebuilder-mediatek-filogic.Linux-x86_64/build_dir/target-aarch64_cortex-a53_musl/linux-mediatek_filogic
+    cp -rf ${{ github.workspace }}/mediatek-filogic/cudy_tr3000-512mb-v1-kernel.bin.its  /home/build/immortalwrt/bin/targets/mediatek/filogic/immortalwrt-imagebuilder-mediatek-filogic.Linux-x86_64/build_dir/target-aarch64_cortex-a53_musl/linux-mediatek_filogic
     
     echo ""
     echo "后续操作指引："
